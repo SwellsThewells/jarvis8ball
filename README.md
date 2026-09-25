@@ -69,11 +69,11 @@ played, drinks, punches landed, times decked). It's in `scripts/pool_profile.gd`
   Anything you did before ever signing in carries over to the first account
   that signs in.
 
-Steam isn't in the project yet, and the game runs fine without it. To switch
-it on:
+[GodotSteam](https://godotsteam.com) (the GDExtension) is already in
+`addons/godotsteam`, and the game still runs fine if Steam isn't open. To
+finish setting it up:
 
-1. Add [GodotSteam](https://godotsteam.com) (the GDExtension from the Asset
-   Library) to the project.
+1. Open the project in the editor once so Godot picks up the extension.
 2. Put your app ID in `APP_ID` in `scripts/pool_profile.gd`, or in
    `steam_appid.txt` next to the exe. Until then it's 480, Valve's Spacewar
    test app, so sign-in can be tried now; stats won't stick on Spacewar.
