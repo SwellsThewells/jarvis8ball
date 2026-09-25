@@ -68,40 +68,43 @@ class ScoreBar extends Control:
 		var w := size.x
 		var h := size.y
 		var half := w * 0.5
-		draw_style_box(PoolTheme.box(Color(0.025, 0.03, 0.03, 0.86), 9, PoolTheme.LINE, 1, 8), Rect2(Vector2.ZERO, size))
-		# whose turn: a gold bar slides under them
-		var bar_w := half - 30.0
-		var bx := lerpf(8.0, half + 22.0, _slide)
-		draw_style_box(PoolTheme.box(PoolTheme.GOLD, 2), Rect2(Vector2(bx, h - 4.0), Vector2(bar_w, 3.0)))
+		draw_style_box(PoolTheme.box(Color(0, 0, 0, 0.3), 16), Rect2(Vector2(0, 5), size).grow(1))
+		draw_style_box(PoolTheme.box(PoolTheme.PANEL, 14, PoolTheme.HAIR, 1), Rect2(Vector2.ZERO, size))
+		# whose turn: their half lights up a little, with a gold line under it
+		var bar_w := half - 34.0
+		var bx := lerpf(14.0, half + 20.0, _slide)
+		draw_style_box(PoolTheme.box(Color(PoolTheme.GOLD, 0.06), 10), Rect2(Vector2(bx - 8.0, 4.0), Vector2(bar_w + 16.0, h - 8.0)))
+		draw_style_box(PoolTheme.box(PoolTheme.GOLD, 1), Rect2(Vector2(bx, h - 3.0), Vector2(bar_w, 2.0)))
 		var nf := PoolHud._f(800, true, 1)
-		var sf := PoolHud._f(600, false, 1)
+		var sf := PoolHud._f(700, false, 2)
 		for side in 2:
 			var on: bool = side == active
 			var nm: String = names[side]
 			var note: String = notes[side]
 			if side == 1 and thinking:
 				note = "thinking" + ".".repeat(int(_t * 2.5) % 4)
-			var ncol := PoolTheme.WHITE if on else Color(1, 1, 1, 0.5)
-			var tcol := PoolTheme.GOLD if on else Color(1, 1, 1, 0.38)
+			var ncol := PoolTheme.WHITE if on else Color(1, 1, 1, 0.45)
+			var tcol := PoolTheme.GOLD if on else PoolTheme.FAINT
 			var balls: Array = ids[side]
 			var step := 17.0
 			if side == 0:
-				draw_string(nf, Vector2(16, 22), nm, HORIZONTAL_ALIGNMENT_LEFT, -1, 18, ncol)
-				draw_string(sf, Vector2(16, 37), note.to_upper(), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, tcol)
+				draw_string(nf, Vector2(18, 25), nm, HORIZONTAL_ALIGNMENT_LEFT, -1, 18, ncol)
+				draw_string(sf, Vector2(18, 41), note.to_upper(), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, tcol)
 				for i in balls.size():
 					_ball(Vector2(half - 40.0 - float(balls.size() - 1 - i) * step, h * 0.5 - 1.0), balls[i], on)
 			else:
 				var nw := nf.get_string_size(nm, HORIZONTAL_ALIGNMENT_LEFT, -1, 18).x
-				draw_string(nf, Vector2(w - 16 - nw, 22), nm, HORIZONTAL_ALIGNMENT_LEFT, -1, 18, ncol)
+				draw_string(nf, Vector2(w - 18 - nw, 25), nm, HORIZONTAL_ALIGNMENT_LEFT, -1, 18, ncol)
 				var tw := sf.get_string_size(note.to_upper(), HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
-				draw_string(sf, Vector2(w - 16 - tw, 37), note.to_upper(), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, tcol)
+				draw_string(sf, Vector2(w - 18 - tw, 41), note.to_upper(), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, tcol)
 				for i in balls.size():
 					_ball(Vector2(half + 40.0 + float(i) * step, h * 0.5 - 1.0), balls[i], on)
 		# the J in the middle
 		var c := Vector2(half, h * 0.5 - 1.0)
-		draw_circle(c, 15.0, Color(0, 0, 0, 0.5))
+		draw_circle(c, 17.0, Color(0.03, 0.033, 0.036), true, -1.0, true)
+		draw_arc(c, 17.0, 0.0, TAU, 40, PoolTheme.HAIR, 1.0, true)
 		if logo != null:
-			draw_texture_rect(logo, Rect2(c - Vector2(14, 14), Vector2(28, 28)), false)
+			draw_texture_rect(logo, Rect2(c - Vector2(13, 13), Vector2(26, 26)), false)
 
 	func _ball(c: Vector2, id: int, on: bool) -> void:
 		var col: Color = PoolArt.BALL_COLORS.get(id, Color.WHITE)
@@ -148,12 +151,12 @@ class Toast extends Control:
 		var a: float = clampf(life / 0.35, 0.0, 1.0)
 		var appear: float = clampf((TOTAL - life) / 0.15, 0.0, 1.0)
 		var w := f.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
-		var bw := w + 38.0
+		var bw := w + 44.0
 		var y := (1.0 - appear) * -6.0
-		var box := Rect2(Vector2((size.x - bw) * 0.5, y), Vector2(bw, 30.0))
-		draw_style_box(PoolTheme.box(Color(0.025, 0.03, 0.03, 0.82 * a), 15), box)
-		draw_circle(Vector2(box.position.x + 15.0, y + 15.0), 3.5, Color(tone, a))
-		draw_string(f, Vector2(box.position.x + 26.0, y + 20.0), text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs,
+		var box := Rect2(Vector2((size.x - bw) * 0.5, y), Vector2(bw, 32.0))
+		draw_style_box(PoolTheme.box(Color(PoolTheme.PANEL, 0.9 * a), 16, Color(1, 1, 1, 0.08 * a), 1), box)
+		draw_circle(Vector2(box.position.x + 17.0, y + 16.0), 3.5, Color(tone, a), true, -1.0, true)
+		draw_string(f, Vector2(box.position.x + 29.0, y + 21.0), text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs,
 			Color(0.96, 0.95, 0.92, a))
 
 
@@ -238,9 +241,9 @@ class Cash extends Control:
 		var txt := "$%d" % amount
 		var w := f.get_string_size(txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 22).x
 		var r := Rect2(Vector2(0, 4), Vector2(w + 50, 38))
-		draw_style_box(PoolTheme.box(Color(0.025, 0.03, 0.03, 0.8 * _vis), 19), r)
-		draw_circle(Vector2(20, 23), 11, Color(PoolTheme.GOLD, _vis))
-		draw_circle(Vector2(20, 23), 7.5, Color(0.8, 0.6, 0.2, _vis))
+		draw_style_box(PoolTheme.box(Color(PoolTheme.PANEL, 0.9 * _vis), 19, Color(1, 1, 1, 0.08 * _vis), 1), r)
+		draw_circle(Vector2(20, 23), 10, Color(PoolTheme.GOLD, _vis), true, -1.0, true)
+		draw_circle(Vector2(20, 23), 6.5, Color(0.8, 0.6, 0.2, _vis), true, -1.0, true)
 		draw_string(f, Vector2(38, 31), txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 22, Color(1, 1, 1, _vis))
 
 
@@ -261,7 +264,8 @@ class PunchMeter extends Control:
 			return
 		var a := _vis
 		var c := Vector2(22, size.y * 0.5)
-		draw_circle(c, 20.0, Color(0.025, 0.03, 0.03, 0.8 * a))
+		draw_circle(c, 20.0, Color(PoolTheme.PANEL, 0.9 * a), true, -1.0, true)
+		draw_arc(c, 20.0, 0.0, TAU, 40, Color(1, 1, 1, 0.08 * a), 1.0, true)
 		var ready := cd <= 0.0
 		var col := Color(PoolTheme.GOLD, a) if ready else Color(1, 1, 1, 0.35 * a)
 		if not ready:
@@ -317,9 +321,10 @@ class PowerColumn extends Control:
 			return
 		var w := size.x
 		var h := size.y
-		draw_style_box(PoolTheme.box(Color(0.03, 0.035, 0.035, 0.8), 8, PoolTheme.LINE, 1, 6), Rect2(Vector2.ZERO, size))
+		draw_style_box(PoolTheme.box(PoolTheme.PANEL, 13, PoolTheme.HAIR, 1), Rect2(Vector2.ZERO, size))
 		var v: float = clampf(value, 0.0, 1.0)
-		var inner := Rect2(Vector2(5, 5), Vector2(w - 10, h - 10))
+		var inner := Rect2(Vector2(9, 9), Vector2(w - 18, h - 18))
+		draw_style_box(PoolTheme.box(Color(1, 1, 1, 0.08), 4), inner)
 		var fill := inner.size.y * v
 		if fill > 1.0:
 			var steps := int(fill)
@@ -329,7 +334,8 @@ class PowerColumn extends Control:
 				var yy := inner.end.y - float(i)
 				draw_line(Vector2(inner.position.x, yy), Vector2(inner.end.x, yy), c, 1.0)
 		var f2 := PoolHud._f(800, true)
-		draw_string(f2, Vector2(0, h + 30), "%d" % int(round(v * 100.0)), HORIZONTAL_ALIGNMENT_CENTER, w, 22, PoolTheme.WHITE)
+		draw_string(f2, Vector2(-20, h + 30), "%d" % int(round(v * 100.0)), HORIZONTAL_ALIGNMENT_CENTER, w + 40, 22, PoolTheme.WHITE)
+		PoolTheme.caps(self, Vector2(-20, h + 46), "POWER", PoolTheme.FAINT, 9, w + 40, HORIZONTAL_ALIGNMENT_CENTER)
 
 
 # Where the tip meets the cue ball. Small in the corner while you shoot; big
@@ -395,31 +401,26 @@ class HintBar extends Control:
 		if items.is_empty():
 			return
 		var kf := PoolHud._f(800)
-		var tf := PoolHud._f(600)
+		var tf := PoolHud._f(500)
 		var total := 0.0
 		var widths: Array = []
 		for it in items:
-			var kw := maxf(30.0, kf.get_string_size(str(it[0]), HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x + 16.0)
-			var tw := tf.get_string_size(str(it[1]), HORIZONTAL_ALIGNMENT_LEFT, -1, 15).x
+			var kw := maxf(26.0, kf.get_string_size(str(it[0]), HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x + 16.0)
+			var tw := tf.get_string_size(str(it[1]), HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x
 			widths.append([kw, tw])
-			total += kw + 10.0 + tw + 34.0
-		total -= 34.0
+			total += kw + 10.0 + tw + 28.0
+		total -= 28.0
 		var x := (size.x - total) * 0.5
 		var y := size.y * 0.5
-		draw_style_box(PoolTheme.box(Color(0.02, 0.025, 0.025, 0.55), 22), Rect2(Vector2(x - 12.0, y - 20.0), Vector2(total + 24.0, 40.0)))
+		draw_style_box(PoolTheme.box(Color(PoolTheme.PANEL, 0.82), 19, PoolTheme.HAIR, 1),
+			Rect2(Vector2(x - 8.0, y - 19.0), Vector2(total + 26.0, 38.0)))
 		for i in items.size():
 			var kw: float = widths[i][0]
 			var tw: float = widths[i][1]
-			var kr := Rect2(Vector2(x, y - 14), Vector2(kw, 28))
-			draw_style_box(PoolTheme.box(Color(0, 0, 0, 0.5), 6), Rect2(kr.position + Vector2(0, 2), kr.size))
-			draw_style_box(PoolTheme.box(Color(0.93, 0.91, 0.86, 0.92), 6), kr)
-			draw_string(kf, Vector2(kr.position.x, kr.position.y + 19), str(items[i][0]), HORIZONTAL_ALIGNMENT_CENTER,
-				kr.size.x, 12, Color(0.1, 0.1, 0.1))
-			draw_string(tf, Vector2(x + kw + 10.0 + 1.0, y + 7), str(items[i][1]), HORIZONTAL_ALIGNMENT_LEFT, -1, 15,
-				Color(0, 0, 0, 0.6))
-			draw_string(tf, Vector2(x + kw + 10.0, y + 6), str(items[i][1]), HORIZONTAL_ALIGNMENT_LEFT, -1, 15,
-				Color(1, 1, 1, 0.88))
-			x += kw + 10.0 + tw + 34.0
+			PoolTheme.keycap(self, Vector2(x, y - 13), str(items[i][0]), 26.0, 11)
+			draw_string(tf, Vector2(x + kw + 10.0, y + 5), str(items[i][1]), HORIZONTAL_ALIGNMENT_LEFT, -1, 14,
+				Color(1, 1, 1, 0.86))
+			x += kw + 10.0 + tw + 28.0
 
 
 class CardButtons extends Control:
@@ -450,19 +451,13 @@ class CardButtons extends Control:
 		rects.clear()
 		var n := buttons.size()
 		var bw := w
-		var bh := 60.0
+		var bh := 54.0
 		for i in n:
-			var r := Rect2(Vector2((size.x - bw) * 0.5, y + float(i) * (bh + 12.0)), Vector2(bw, bh))
+			var r := Rect2(Vector2((size.x - bw) * 0.5, y + float(i) * (bh + 10.0)), Vector2(bw, bh))
 			rects.append(r)
-			var hot := r.has_point(hover)
 			var primary: bool = buttons[i][2]
-			var base := PoolTheme.FELT if primary else Color(0.16, 0.17, 0.17, 0.95)
-			var hi := PoolTheme.FELT_HI if primary else Color(0.26, 0.27, 0.27, 0.95)
-			draw_style_box(PoolTheme.box(Color(0, 0, 0, 0.45), 12), Rect2(r.position + Vector2(0, 4), r.size))
-			draw_style_box(PoolTheme.box(base.lerp(hi, 0.6 if hot else 0.0), 12, Color(1, 1, 1, 0.3 if hot else 0.12), 1), r)
-			draw_style_box(PoolTheme.box(Color(1, 1, 1, 0.08), 9), Rect2(r.position + Vector2(3, 3), Vector2(r.size.x - 6, r.size.y * 0.45)))
-			draw_string(PoolHud._f(800, true, 2), Vector2(r.position.x, r.position.y + 39), str(buttons[i][1]),
-				HORIZONTAL_ALIGNMENT_CENTER, r.size.x, 24, PoolTheme.WHITE)
+			PoolTheme.button(self, r, str(buttons[i][1]), "primary" if primary else "secondary",
+				1.0 if r.has_point(hover) else 0.0, true, 18)
 
 
 class PauseCard extends CardButtons:
@@ -474,14 +469,16 @@ class PauseCard extends CardButtons:
 		chosen.emit("resume")
 
 	func _draw() -> void:
-		draw_rect(Rect2(Vector2.ZERO, size), Color(0.0, 0.0, 0.0, 0.55))
-		var cw := 420.0
-		var ch := 360.0
+		draw_rect(Rect2(Vector2.ZERO, size), Color(0.0, 0.0, 0.0, 0.6))
+		var cw := 400.0
+		var ch := 346.0
 		var card := Rect2(Vector2((size.x - cw) * 0.5, (size.y - ch) * 0.5), Vector2(cw, ch))
-		draw_style_box(PoolTheme.box(Color(0.045, 0.05, 0.05, 0.96), 18, PoolTheme.LINE, 1, 24), card)
-		draw_string(PoolHud._f(800, true, 2), Vector2(card.position.x, card.position.y + 66), "PAUSED",
-			HORIZONTAL_ALIGNMENT_CENTER, card.size.x, 44, PoolTheme.WHITE)
-		_draw_buttons(card.position.y + 100.0, cw - 64.0)
+		PoolTheme.panel(self, card, Color(0, 0, 0, 0), 18)
+		draw_string(PoolHud._f(800, true, 1), Vector2(card.position.x, card.position.y + 72), "PAUSED",
+			HORIZONTAL_ALIGNMENT_CENTER, card.size.x, 42, PoolTheme.WHITE)
+		PoolTheme.caps(self, Vector2(card.position.x, card.position.y + 100), "ESC TO RESUME", PoolTheme.FAINT, 11,
+			card.size.x, HORIZONTAL_ALIGNMENT_CENTER)
+		_draw_buttons(card.position.y + 128.0, cw - 64.0)
 
 
 class ResultCard extends CardButtons:
@@ -497,16 +494,18 @@ class ResultCard extends CardButtons:
 		if title == "":
 			return
 		draw_rect(Rect2(Vector2.ZERO, size), Color(0.0, 0.0, 0.0, 0.5))
-		var cw := 520.0
+		var cw := 480.0
 		var ch := 330.0
 		var card := Rect2(Vector2((size.x - cw) * 0.5, (size.y - ch) * 0.5), Vector2(cw, ch))
 		var tone := PoolTheme.GOLD if won else PoolTheme.DANGER
-		draw_style_box(PoolTheme.box(Color(0.045, 0.05, 0.05, 0.96), 18, Color(tone.r, tone.g, tone.b, 0.6), 2, 24), card)
-		draw_string(PoolHud._f(800, true, 2), Vector2(card.position.x, card.position.y + 74), title.to_upper(),
-			HORIZONTAL_ALIGNMENT_CENTER, card.size.x, 54, tone)
-		draw_string(PoolHud._f(500), Vector2(card.position.x, card.position.y + 112), sub,
-			HORIZONTAL_ALIGNMENT_CENTER, card.size.x, 18, Color(1, 1, 1, 0.8))
-		_draw_buttons(card.position.y + 150.0, cw - 120.0)
+		PoolTheme.panel(self, card, tone, 18)
+		PoolTheme.caps(self, Vector2(card.position.x, card.position.y + 46), "VICTORY" if won else "DEFEAT", tone, 12,
+			card.size.x, HORIZONTAL_ALIGNMENT_CENTER)
+		draw_string(PoolHud._f(800, true, 1), Vector2(card.position.x, card.position.y + 98), title.to_upper(),
+			HORIZONTAL_ALIGNMENT_CENTER, card.size.x, 48, PoolTheme.WHITE)
+		draw_string(PoolHud._f(500), Vector2(card.position.x + 32, card.position.y + 132), sub,
+			HORIZONTAL_ALIGNMENT_CENTER, card.size.x - 64, 16, Color(1, 1, 1, 0.7))
+		_draw_buttons(card.position.y + 184.0, cw - 64.0)
 
 
 # ---------------------------------------------------------------------------
@@ -594,8 +593,8 @@ func _layout() -> void:
 	var vs := get_viewport().get_visible_rect().size
 	var bar_w := 620.0
 	_place(ko_shade, Vector2.ZERO, vs)
-	_place(score, Vector2((vs.x - bar_w) * 0.5, 14), Vector2(bar_w, 50))
-	_place(toast, Vector2(0, 74), Vector2(vs.x, 34))
+	_place(score, Vector2((vs.x - bar_w) * 0.5, 16), Vector2(bar_w, 54))
+	_place(toast, Vector2(0, 82), Vector2(vs.x, 34))
 	_place(punch_meter, Vector2(24, vs.y - 100), Vector2(160, 48))
 	_place(cash, Vector2(24, vs.y - 158), Vector2(160, 48))
 	_place(bubbles, Vector2.ZERO, vs)

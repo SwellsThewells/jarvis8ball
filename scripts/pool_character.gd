@@ -537,6 +537,10 @@ func ko_length() -> float:
 func _build_ragdoll() -> void:
 	_sim = PhysicalBoneSimulator3D.new()
 	_sim.name = "Ragdoll"
+	# a new simulator starts out active, and everything that asks "has the
+	# physics got him?" would say yes until the first knockdown: his cue hung
+	# off a limp forearm and swung about. It's only switched on for a fall.
+	_sim.active = false
 	skel.add_child(_sim)
 	for spec in RAG_BONES:
 		var b := _find(spec[0])

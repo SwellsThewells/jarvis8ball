@@ -1799,6 +1799,8 @@ func _update_presence(delta: float) -> void:
 			"shop":
 				details = "In the shop"
 				state = "Looking at %s" % str(PoolCues.CUES[menu.screen.picked_cue].name)
+			"mode":
+				state = "Choosing a game mode"
 			"play":
 				state = "Picking an opponent"
 			"info":

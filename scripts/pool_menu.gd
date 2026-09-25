@@ -159,7 +159,7 @@ class Screen extends Control:
 	signal ui_sound(kind: String)
 
 	var state := {"owned": ["house"], "equipped": "house", "difficulty": 5, "guides": true}
-	var page := "main"            # main, play, shop, info
+	var page := "main"            # main, mode, play, shop, info, settings, code, profile
 	var page_t := 1.0             # slide-in for the current page
 	var t := 0.0
 	var hover := Vector2(-100, -100)
@@ -199,7 +199,7 @@ class Screen extends Control:
 		["cycle", "max_fps", "Frame rate cap", "Lower saves power and heat"],
 		["toggle", "film_fx", "Film grain and vignette", "The soft, dark-edged look over the picture"],
 	]
-	const SET_ROW_H := 70.0
+	const SET_ROW_H := 66.0
 	var slider_rects := {}
 	var dragging_slider := ""
 
@@ -210,6 +210,7 @@ class Screen extends Control:
 	var code_edit: LineEdit
 	var code_msg := ""
 	var code_shake := 0.0
+	var mp_nudge := 0.0           # the multiplayer card shaking its head
 	var _reveal_pick := false     # scroll the shop to the picked cue on its next draw
 
 	func _ready() -> void:
@@ -253,6 +254,7 @@ class Screen extends Control:
 		page_t = minf(1.0, page_t + delta * 4.5)
 		toast_t = maxf(0.0, toast_t - delta)
 		code_shake = maxf(0.0, code_shake - delta * 2.5)
+		mp_nudge = maxf(0.0, mp_nudge - delta * 2.5)
 		if page == "profile" and (profile == null or not profile.signed_in):
 			go("main")
 		scroll = lerpf(scroll, scroll_to, 1.0 - exp(-14.0 * delta))
@@ -343,8 +345,16 @@ class Screen extends Control:
 			_last_hot = hot
 
 	func _press(name: String) -> void:
-		if name in ["play", "shop", "info", "settings"]:
+		if name == "play":
+			go("mode")
+		elif name in ["shop", "info", "settings"]:
 			go(name)
+		elif name == "mode_bot":
+			go("play")
+		elif name == "mode_mp":
+			ui_sound.emit("click")
+			mp_nudge = 1.0
+			show_toast("Multiplayer is coming soon.")
 		elif name == "chip":
 			if profile != null and profile.signed_in:
 				go("profile")
@@ -383,7 +393,13 @@ class Screen extends Control:
 			ui_sound.emit("click")
 			quit_pressed.emit()
 		elif name == "back":
-			go("settings" if page == "code" else "main")
+			match page:
+				"code":
+					go("settings")
+				"play":
+					go("mode")
+				_:
+					go("main")
 		elif name == "jball":
 			go("code")
 		elif name == "redeem":
@@ -457,6 +473,8 @@ class Screen extends Control:
 				if page == "code":
 					if ev.keycode == KEY_ESCAPE:
 						go("settings")
+				elif page == "play":
+					go("mode")
 				elif page != "main":
 					go("main")
 			KEY_ENTER, KEY_KP_ENTER:
@@ -464,8 +482,10 @@ class Screen extends Control:
 					_redeem()
 				elif page == "play":
 					_press("start")
-				elif page == "main":
+				elif page == "mode":
 					go("play")
+				elif page == "main":
+					go("mode")
 			KEY_LEFT:
 				if page == "play":
 					_press("lvl_down")
@@ -554,6 +574,8 @@ class Screen extends Control:
 		match page:
 			"main":
 				_draw_main()
+			"mode":
+				_draw_mode()
 			"play":
 				_draw_play()
 			"shop":
@@ -598,40 +620,25 @@ class Screen extends Control:
 		_text(Vector2(x + 3.0, at.y + 80.0 * scale), "8 BALL POOL", int(20.0 * scale), PoolTheme.GOLD, 700, false, HORIZONTAL_ALIGNMENT_LEFT, -1, 5)
 
 	func _back_button(x: float, y: float) -> void:
-		var r := Rect2(Vector2(x - 8, y - 26), Vector2(118, 40))
+		var r := Rect2(Vector2(x - 4, y - 24), Vector2(104, 36))
 		_hit(r, "back")
 		var a := _a("back")
-		var col := PoolTheme.MUTED.lerp(PoolTheme.WHITE, a)
-		_text(Vector2(x + a * -4.0, y), "‹  BACK", 18, col, 700, true, HORIZONTAL_ALIGNMENT_LEFT, -1, 2)
+		draw_style_box(PoolTheme.box(Color(1, 1, 1, 0.04 + a * 0.06), 18, Color(1, 1, 1, 0.12 + a * 0.16), 1), r)
+		_text(Vector2(r.position.x, r.get_center().y + 5.0), "‹  BACK", 14, PoolTheme.MUTED.lerp(PoolTheme.WHITE, a), 700, true,
+			HORIZONTAL_ALIGNMENT_CENTER, r.size.x, 2)
 
 	func _page_title(x: float, y: float, s: String, sub: String) -> void:
 		var e := _ease(page_t)
-		var dx := (1.0 - e) * -40.0
-		_text(Vector2(x + dx, y), s, 64, Color(1, 1, 1, e), 800, true)
+		var dx := (1.0 - e) * -30.0
 		if sub != "":
-			_text(Vector2(x + dx + 3, y + 30), sub, 16, Color(PoolTheme.GOLD.r, PoolTheme.GOLD.g, PoolTheme.GOLD.b, e),
-				600, false, HORIZONTAL_ALIGNMENT_LEFT, -1, 3)
+			PoolTheme.caps(self, Vector2(x + dx + 2, y - 60), sub, Color(PoolTheme.GOLD, e), 13)
+		_text(Vector2(x + dx, y), s, 60, Color(1, 1, 1, e), 800, true)
 
 	func _button(r: Rect2, name: String, label: String, primary := true, enabled := true) -> void:
 		if enabled:
 			_hit(r, name)
 		var a := _a(name) if enabled else 0.0
-		var lift := a * 2.0
-		var rr := Rect2(r.position - Vector2(0, lift), r.size)
-		var base := PoolTheme.FELT if primary else Color(0.16, 0.17, 0.17, 0.95)
-		var top := PoolTheme.FELT_HI if primary else Color(0.24, 0.25, 0.25, 0.95)
-		if not enabled:
-			base = Color(0.12, 0.13, 0.13, 0.8)
-			top = base
-		draw_style_box(PoolTheme.box(Color(0, 0, 0, 0.45), 12), Rect2(r.position + Vector2(0, 4), r.size))
-		draw_style_box(PoolTheme.box(base.lerp(top, a * 0.6), 12, Color(1, 1, 1, 0.12 + a * 0.2), 1), rr)
-		# a lighter band over the top half, like a lacquered button
-		var band := Rect2(rr.position + Vector2(3, 3), Vector2(rr.size.x - 6, rr.size.y * 0.45))
-		draw_style_box(PoolTheme.box(Color(1, 1, 1, 0.07 + a * 0.05), 9), band)
-		var fs := 26
-		var col := PoolTheme.WHITE if enabled else PoolTheme.MUTED
-		_text(Vector2(rr.position.x, rr.position.y + rr.size.y * 0.5 + fs * 0.36), label, fs, col, 800, true,
-			HORIZONTAL_ALIGNMENT_CENTER, rr.size.x, 2)
+		PoolTheme.button(self, r, label, "primary" if primary else "secondary", a, enabled, 20 if r.size.y >= 56.0 else 15)
 
 	# --- main -------------------------------------------------------------
 
@@ -669,72 +676,151 @@ class Screen extends Control:
 		_text(at, label, 13, PoolTheme.MUTED, 700, false, HORIZONTAL_ALIGNMENT_LEFT, -1, 3)
 		_text(at + Vector2(0, 26), value, 20, PoolTheme.WHITE, 600)
 
-	# --- play -------------------------------------------------------------
+	# --- mode -------------------------------------------------------------
+
+	func _draw_mode() -> void:
+		var x := 84.0
+		_back_button(x, 70.0)
+		_page_title(x, 170.0, "PLAY", "CHOOSE A GAME MODE")
+		var cw := clampf((size.x - x * 2.0 - 24.0) * 0.5, 300.0, 400.0)
+		var cards := [
+			["mode_bot", "VS COMPUTER", "Eight-ball against the house player. Pick how good he is, from 1 to 10.", true],
+			["mode_mp", "MULTIPLAYER", "Take on your friends online, at the same table.", false],
+		]
+		for i in 2:
+			var d: Array = cards[i]
+			var ei := _ease(page_t * 1.4 - float(i) * 0.15)
+			var nm: String = d[0]
+			var live: bool = d[3]
+			var a := _a(nm)
+			var shake := 0.0 if live else sin(t * 50.0) * mp_nudge * mp_nudge * 10.0
+			var r := Rect2(Vector2(x + float(i) * (cw + 24.0) + (1.0 - ei) * -40.0 + shake, 236.0), Vector2(cw, 420))
+			_hit(r, nm)
+			var rr := Rect2(r.position - Vector2(0, a * 4.0 if live else 0.0), r.size)
+			PoolTheme.panel(self, rr)
+			if live and a > 0.01:
+				draw_style_box(PoolTheme.box(Color(0, 0, 0, 0), 16, Color(PoolTheme.GOLD, 0.7 * a), 1), rr)
+			var alpha := 1.0 if live else 0.5
+			var art := Rect2(rr.position + Vector2(16, 16), Vector2(rr.size.x - 32, 200))
+			draw_style_box(PoolTheme.box(Color(1, 1, 1, 0.035 + (a * 0.02 if live else 0.0)), 12), art)
+			if live:
+				_icon_bot(art.get_center(), a)
+			else:
+				_icon_mp(art.get_center())
+				PoolTheme.badge(self, Vector2(art.end.x - 14, art.position.y + 14), "COMING SOON")
+			var ty := art.end.y + 58.0
+			_text(Vector2(rr.position.x + 28, ty), str(d[1]), 34, Color(PoolTheme.WHITE, alpha), 800, true,
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 1)
+			draw_multiline_string(PoolTheme.font(400), Vector2(rr.position.x + 28, ty + 32), str(d[2]),
+				HORIZONTAL_ALIGNMENT_LEFT, rr.size.x - 56.0, 16, 3, Color(1, 1, 1, 0.66 * alpha))
+			var fy := rr.end.y - 32.0
+			if live:
+				_text(Vector2(rr.position.x + 28 + a * 4.0, fy), "CHOOSE OPPONENT  ›", 15, PoolTheme.GOLD.lerp(Color("ffd978"), a),
+					700, true, HORIZONTAL_ALIGNMENT_LEFT, -1, 2)
+			else:
+				_text(Vector2(rr.position.x + 28, fy), "ON ITS WAY", 15, PoolTheme.FAINT, 700, true, HORIZONTAL_ALIGNMENT_LEFT, -1, 2)
+
+	# the house player's card: the J ball with a cue lined up on it
+	func _icon_bot(c: Vector2, a: float) -> void:
+		if logo == null:
+			logo = load("res://icon.png")
+		var r := 54.0 + a * 3.0
+		draw_circle(c + Vector2(0, 8), r, Color(0, 0, 0, 0.35), true, -1.0, true)
+		if logo != null:
+			draw_texture_rect(logo, Rect2(c - Vector2(r, r), Vector2(r, r) * 2.0), false)
+		var d := Vector2(-1.0, 0.42).normalized()
+		var tip := c + d * (r + 14.0 - a * 6.0)
+		draw_line(tip, tip + d * 96.0, Color("d9bf8c"), 6.0, true)
+		draw_line(tip, tip + d * 6.0, Color("2c4a6e"), 6.0, true)
+
+	# two people: you and a friend
+	func _icon_mp(c: Vector2) -> void:
+		var col := Color(1, 1, 1, 0.32)
+		_person(c + Vector2(-34, 0), 44.0, col)
+		_person(c + Vector2(34, 0), 44.0, col)
+		draw_circle(c + Vector2(0, -4), 18.0, Color(0.08, 0.085, 0.09), true, -1.0, true)
+		_text(Vector2(c.x - 20, c.y + 3), "VS", 15, Color(1, 1, 1, 0.5), 800, true, HORIZONTAL_ALIGNMENT_CENTER, 40)
+
+	# --- play against the house ------------------------------------------
 
 	func _draw_play() -> void:
 		var x := 84.0
 		var e := _ease(page_t)
 		_back_button(x, 70.0)
-		_page_title(x, 170.0, "PLAY", "EIGHT-BALL  VS  COMPUTER")
-
-		var pw := bar_width() - x
-		var panel := Rect2(Vector2(x - 24 + (1.0 - e) * -50.0, 240), Vector2(pw + 24, 470))
-		draw_style_box(PoolTheme.box(PoolTheme.SHADE, 16, PoolTheme.LINE, 1, 18), panel)
-		var px := panel.position.x + 28.0
-		var inner_w := panel.size.x - 56.0
-		var y := panel.position.y + 44.0
-
-		_text(Vector2(px, y), "OPPONENT", 14, PoolTheme.MUTED, 700, false, HORIZONTAL_ALIGNMENT_LEFT, -1, 3)
+		_page_title(x, 170.0, "VS COMPUTER", "EIGHT-BALL")
+		var pw := clampf(bar_width() - x + 40.0, 480.0, 600.0)
+		var panel := Rect2(Vector2(x + (1.0 - e) * -40.0, 236), Vector2(pw, 456))
+		PoolTheme.panel(self, panel)
+		var px := panel.position.x + 32.0
+		var inner_w := panel.size.x - 64.0
+		var y := panel.position.y + 46.0
+		PoolTheme.caps(self, Vector2(px, y), "OPPONENT")
 		var diff := clampi(int(state.difficulty), 1, 10)
-		# level, big, with arrows either side
-		y += 58.0
-		var name_s: String = PoolAI.SKILL_LABELS[diff - 1]
-		var ar := Rect2(Vector2(px, y - 40), Vector2(44, 50))
-		var br := Rect2(Vector2(px + inner_w - 44, y - 40), Vector2(44, 50))
-		_hit(ar, "lvl_down")
-		_hit(br, "lvl_up")
-		_text(Vector2(ar.position.x, y), "‹", 46, PoolTheme.MUTED.lerp(PoolTheme.WHITE, _a("lvl_down")), 700, false,
-			HORIZONTAL_ALIGNMENT_CENTER, ar.size.x)
-		_text(Vector2(br.position.x, y), "›", 46, PoolTheme.MUTED.lerp(PoolTheme.WHITE, _a("lvl_up")), 700, false,
-			HORIZONTAL_ALIGNMENT_CENTER, br.size.x)
-		_text(Vector2(px, y), name_s.to_upper(), 40, PoolTheme.WHITE, 800, true, HORIZONTAL_ALIGNMENT_CENTER, inner_w, 1)
-		_text(Vector2(px, y + 30), "LEVEL %d" % diff, 16, PoolTheme.GOLD, 700, false, HORIZONTAL_ALIGNMENT_CENTER, inner_w, 3)
 
-		# ten steps you can click straight to
-		y += 62.0
-		var gap := 6.0
-		var cw := (inner_w - gap * 9.0) / 10.0
-		for i in 10:
-			var r := Rect2(Vector2(px + float(i) * (cw + gap), y), Vector2(cw, 30))
-			var nm := "lvl:%d" % (i + 1)
-			_hit(r, nm)
-			var on := i + 1 <= diff
-			var a := _a(nm)
-			var col := Color(0.2, 0.21, 0.21, 0.9)
-			if on:
-				col = PoolTheme.GOLD.lerp(Color("ff8a3d"), float(i) / 9.0)
-			col = col.lerp(Color(1, 1, 1, col.a), a * 0.25)
-			draw_style_box(PoolTheme.box(col, 5), r)
-			if i + 1 == diff:
-				draw_style_box(PoolTheme.box(Color(0, 0, 0, 0), 6, PoolTheme.WHITE, 2), r.grow(3))
-
-		# aiming guide
+		# his level, big, beside who he is
 		y += 84.0
-		draw_line(Vector2(px, y - 34), Vector2(px + inner_w, y - 34), PoolTheme.LINE, 1.0)
-		_text(Vector2(px, y), "AIM GUIDE", 14, PoolTheme.MUTED, 700, false, HORIZONTAL_ALIGNMENT_LEFT, -1, 3)
-		var on_g := bool(state.get("guides", true))
-		_text(Vector2(px, y + 26), "Lines showing where the balls will go" if on_g else "No lines. Just you and the table",
-			16, PoolTheme.WHITE, 400)
-		var sw := Rect2(Vector2(px + inner_w - 86, y - 16), Vector2(86, 40))
-		_hit(Rect2(Vector2(px, y - 26), Vector2(inner_w, 60)), "guides")
-		var ga := _a("guides")
-		draw_style_box(PoolTheme.box((PoolTheme.FELT if on_g else Color(0.25, 0.26, 0.26)).lerp(Color.WHITE, ga * 0.08), 20), sw)
-		var knob_x := sw.position.x + (sw.size.x - 22.0 if on_g else 22.0)
-		draw_circle(Vector2(knob_x, sw.position.y + 20), 15.0, PoolTheme.WHITE)
-		_text(Vector2(sw.position.x + (12.0 if on_g else 40.0), sw.position.y + 26), "ON" if on_g else "OFF",
-			13, Color(1, 1, 1, 0.85), 800)
+		var num := str(diff)
+		_text(Vector2(px - 3, y), num, 88, PoolTheme.GOLD, 800, true)
+		var nw := _text_w(num, 88, 800, true)
+		var name_s: String = PoolAI.SKILL_LABELS[diff - 1]
+		_text(Vector2(px + nw + 18, y - 36), name_s.to_upper(), 30, PoolTheme.WHITE, 800, true, HORIZONTAL_ALIGNMENT_LEFT, -1, 1)
+		PoolTheme.caps(self, Vector2(px + nw + 20, y - 10), "LEVEL %d OF 10" % diff, PoolTheme.FAINT, 11)
+		for k in 2:
+			var nm := "lvl_down" if k == 0 else "lvl_up"
+			var c := Vector2(px + inner_w - 20.0 - (52.0 if k == 0 else 0.0), y - 32.0)
+			var en := diff > 1 if k == 0 else diff < 10
+			if en:
+				_hit(Rect2(c - Vector2(22, 22), Vector2(44, 44)), nm)
+			var a := _a(nm) if en else 0.0
+			draw_circle(c, 20.0, Color(1, 1, 1, 0.05 + a * 0.08), true, -1.0, true)
+			draw_arc(c, 20.0, 0.0, TAU, 48, Color(1, 1, 1, 0.14 + a * 0.22), 1.0, true)
+			_chevron(c, -1.0 if k == 0 else 1.0, Color(1, 1, 1, 0.9 if en else 0.25))
 
-		_button(Rect2(Vector2(px, panel.position.y + panel.size.y - 104), Vector2(inner_w, 72)), "start", "START MATCH")
+		# ten steps, any of them a click away
+		y += 30.0
+		var gap := 4.0
+		var sw := (inner_w - gap * 9.0) / 10.0
+		for i in 10:
+			var r := Rect2(Vector2(px + float(i) * (sw + gap), y), Vector2(sw, 6))
+			var nm2 := "lvl:%d" % (i + 1)
+			_hit(Rect2(r.position - Vector2(0, 12), Vector2(sw + gap, 30)), nm2)
+			var a2 := _a(nm2)
+			var col := PoolTheme.GOLD.lerp(Color("ff8a3d"), float(i) / 9.0) if i + 1 <= diff else Color(1, 1, 1, 0.12 + a2 * 0.2)
+			draw_style_box(PoolTheme.box(col, 3), Rect2(r.position - Vector2(0, a2 * 2.0), r.size + Vector2(0, a2 * 4.0)))
+		y += 46.0
+		draw_multiline_string(PoolTheme.font(400), Vector2(px, y), _level_blurb(diff), HORIZONTAL_ALIGNMENT_LEFT,
+			inner_w, 16, 2, Color(1, 1, 1, 0.7))
+
+		# the aiming guide
+		y += 52.0
+		PoolTheme.divider(self, px, px + inner_w, y)
+		var on_g := bool(state.get("guides", true))
+		_hit(Rect2(Vector2(px, y + 4), Vector2(inner_w, 64)), "guides")
+		_text(Vector2(px, y + 34), "Aim guide", 17, PoolTheme.WHITE, 600)
+		_text(Vector2(px, y + 55), "Lines showing where the balls will go" if on_g else "No lines. Just you and the table",
+			13, PoolTheme.MUTED, 400)
+		PoolTheme.switch(self, Vector2(px + inner_w - 46, y + 23), on_g, _a("guides"))
+
+		_button(Rect2(Vector2(px, panel.end.y - 32 - 60), Vector2(inner_w, 60)), "start", "START MATCH")
+
+	func _level_blurb(d: int) -> String:
+		if d <= 2:
+			return "Misses plenty and never plans ahead. Good for learning the table."
+		if d <= 4:
+			return "Pots the easy ones, but doesn't think much about where the cue ball ends up."
+		if d <= 6:
+			return "A decent stick. Plays some position and knows when to play safe."
+		if d <= 8:
+			return "Solid. Thinks a shot or two ahead, and banks it when nothing's on."
+		if d == 9:
+			return "Rarely misses and leaves you nothing. Bring your best."
+		return "Barely misses. Plays every shot through in his head before he takes it."
+
+	# a small arrow, pointing left (-1) or right (1)
+	func _chevron(c: Vector2, dir: float, col: Color) -> void:
+		var s := 5.0
+		draw_polyline(PackedVector2Array([c + Vector2(-s * 0.5 * dir, -s), c + Vector2(s * 0.5 * dir, 0), c + Vector2(-s * 0.5 * dir, s)]),
+			col, 2.0, true)
 
 	# --- shop -------------------------------------------------------------
 
@@ -748,7 +834,7 @@ class Screen extends Control:
 		# the list: its frame here, its rows drawn clipped inside list_view
 		var lw := 420.0
 		list_rect = Rect2(Vector2(x - 12 + (1.0 - e) * -50.0, 216), Vector2(lw, size.y - 216 - 56))
-		draw_style_box(PoolTheme.box(PoolTheme.SHADE, 14, PoolTheme.LINE, 1, 12), list_rect.grow(8))
+		PoolTheme.panel(self, list_rect.grow(8), Color(0, 0, 0, 0), 14)
 		list_view.position = list_rect.position
 		list_view.size = list_rect.size
 		if _reveal_pick:
@@ -776,7 +862,7 @@ class Screen extends Control:
 		var pick: Dictionary = PoolCues.CUES[clampi(picked_cue, 0, PoolCues.CUES.size() - 1)]
 		preview_rect = Rect2(Vector2(rx, 150), Vector2(rw, minf(rw * 0.5, size.y - 150 - 300)))
 		var pr := preview_rect
-		draw_style_box(PoolTheme.box(Color(0.06, 0.065, 0.07, 0.72), 18, PoolTheme.LINE, 1, 16), pr)
+		draw_style_box(PoolTheme.box(Color(0.043, 0.047, 0.051, 0.72), 16, PoolTheme.HAIR, 1), pr)
 		# a soft pool of light behind the cue, in fine steps so it doesn't band
 		var glow_c := pr.get_center() + Vector2(0, pr.size.y * 0.12)
 		for i in 48:
@@ -808,7 +894,6 @@ class Screen extends Control:
 		var owned: Array = state.owned
 		var font_b := PoolTheme.font(700)
 		var font_t := PoolTheme.font(700, false, 2)
-		var font_k := PoolTheme.font(800, false, 2)
 		var shop := PoolCues.shop_indices(owned)
 		for row in shop.size():
 			var r := _row_rect(row)
@@ -819,10 +904,10 @@ class Screen extends Control:
 			var a := _a("cue:%d" % i)
 			var on := picked_cue == i
 			var equipped := str(state.equipped) == str(cue.id)
-			var bg := Color(1, 1, 1, 0.03 + a * 0.05)
+			var bg := Color(1, 1, 1, 0.02 + a * 0.05)
 			if on:
-				bg = Color(PoolTheme.GOLD.r, PoolTheme.GOLD.g, PoolTheme.GOLD.b, 0.16)
-			c.draw_style_box(PoolTheme.box(bg, 10, PoolTheme.GOLD if on else Color(0, 0, 0, 0), 2 if on else 0), r)
+				bg = Color(PoolTheme.GOLD, 0.1)
+			c.draw_style_box(PoolTheme.box(bg, 10, Color(PoolTheme.GOLD, 0.8) if on else Color(0, 0, 0, 0), 1 if on else 0), r)
 			var cols := PoolCues.swatch(cue)
 			var sw := Rect2(r.position + Vector2(12, 14), Vector2(10, r.size.y - 28))
 			c.draw_style_box(PoolTheme.box(cols[0], 4), sw)
@@ -831,11 +916,7 @@ class Screen extends Control:
 			c.draw_string(font_t, r.position + Vector2(36, 54), str(cue.tag).to_upper(), HORIZONTAL_ALIGNMENT_LEFT, -1, 12, PoolTheme.MUTED)
 			var badge := "EQUIPPED" if equipped else ("SECRET" if cue.get("secret", false) else ("OWNED" if owned.has(cue.id) else "FREE"))
 			var bcol := PoolTheme.FELT_HI if equipped else (PoolTheme.GOLD if cue.get("secret", false) else (PoolTheme.MUTED if owned.has(cue.id) else PoolTheme.GOLD))
-			var bw := font_k.get_string_size(badge, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x + 18.0
-			var brr := Rect2(Vector2(r.end.x - bw - 14, r.position.y + 22), Vector2(bw, 24))
-			c.draw_style_box(PoolTheme.box(Color(bcol.r, bcol.g, bcol.b, 0.16), 12, Color(bcol.r, bcol.g, bcol.b, 0.7), 1), brr)
-			c.draw_string(font_k, Vector2(brr.position.x, brr.position.y + 17), badge, HORIZONTAL_ALIGNMENT_CENTER,
-				brr.size.x, 12, bcol)
+			PoolTheme.badge(c, Vector2(r.end.x - 14, r.position.y + (r.size.y - 22.0) * 0.5), badge, bcol)
 
 	# --- how to play ------------------------------------------------------
 
@@ -845,40 +926,32 @@ class Screen extends Control:
 		_back_button(x, 70.0)
 		_page_title(x, 170.0, "HOW TO PLAY", "AT THE TABLE")
 		var w := minf(size.x - 2.0 * x, 1180.0)
-		var panel := Rect2(Vector2(x - 24 + (1.0 - e) * -50.0, 230), Vector2(w + 24, size.y - 230 - 60))
-		draw_style_box(PoolTheme.box(PoolTheme.SHADE, 16, PoolTheme.LINE, 1, 18), panel)
-		var px := panel.position.x + 32.0
+		var panel := Rect2(Vector2(x + (1.0 - e) * -40.0, 236), Vector2(w, size.y - 236 - 60))
+		PoolTheme.panel(self, panel)
+		var px := panel.position.x + 36.0
 		var y := panel.position.y + 50.0
-		var col_w := (panel.size.x - 96.0) * 0.5
-		_text(Vector2(px, y), "CONTROLS", 14, PoolTheme.MUTED, 700, false, HORIZONTAL_ALIGNMENT_LEFT, -1, 3)
+		var col_w := (panel.size.x - 72.0 - 56.0) * 0.56
+		var rules_w := panel.size.x - 72.0 - 56.0 - col_w
+		PoolTheme.caps(self, Vector2(px, y), "CONTROLS", PoolTheme.GOLD)
 		y += 34.0
 		for row in CONTROLS:
 			var kx := px
 			for k in row[0]:
 				kx += _keycap(Vector2(kx, y - 4), str(k)) + 6.0
-			_text(Vector2(px + 170, y + 20), str(row[1]), 17, PoolTheme.WHITE, 400, false, HORIZONTAL_ALIGNMENT_LEFT, col_w - 170.0)
+			_text(Vector2(px + 160, y + 18), _fit(str(row[1]), 16, 400, col_w - 160.0), 16, PoolTheme.WHITE, 400)
 			y += 50.0
-		var rx := px + col_w + 32.0
+		var rx := px + col_w + 56.0
 		var ry := panel.position.y + 50.0
-		_text(Vector2(rx, ry), "RULES", 14, PoolTheme.MUTED, 700, false, HORIZONTAL_ALIGNMENT_LEFT, -1, 3)
+		PoolTheme.caps(self, Vector2(rx, ry), "RULES", PoolTheme.GOLD)
 		ry += 34.0
 		for i in RULES.size():
-			draw_circle(Vector2(rx + 6, ry + 13), 4.0, PoolTheme.GOLD)
-			draw_multiline_string(PoolTheme.font(400), Vector2(rx + 24, ry + 20), str(RULES[i]),
-				HORIZONTAL_ALIGNMENT_LEFT, col_w - 30.0, 17, 3, Color(1, 1, 1, 0.85))
+			draw_circle(Vector2(rx + 4, ry + 13), 3.5, PoolTheme.GOLD, true, -1.0, true)
+			draw_multiline_string(PoolTheme.font(400), Vector2(rx + 20, ry + 19), str(RULES[i]),
+				HORIZONTAL_ALIGNMENT_LEFT, rules_w - 20.0, 16, 3, Color(1, 1, 1, 0.82))
 			ry += 76.0
 
 	func _keycap(at: Vector2, label: String) -> float:
-		var fs := 14
-		var w := maxf(34.0, _text_w(label, fs, 800) + 20.0)
-		var r := Rect2(at, Vector2(w, 34))
-		draw_style_box(PoolTheme.box(Color(0, 0, 0, 0.5), 7), Rect2(r.position + Vector2(0, 3), r.size))
-		draw_style_box(PoolTheme.box(Color(0.93, 0.91, 0.86), 7), r)
-		draw_style_box(PoolTheme.box(Color(1, 1, 1, 0.5), 5), Rect2(r.position + Vector2(3, 2), Vector2(r.size.x - 6, 12)))
-		_text(Vector2(r.position.x, r.position.y + 23), label, fs, Color(0.1, 0.1, 0.1), 800, false,
-			HORIZONTAL_ALIGNMENT_CENTER, r.size.x)
-		return w
-
+		return PoolTheme.keycap(self, at, label, 32.0, 13)
 
 	# --- settings ---------------------------------------------------------
 
@@ -887,34 +960,37 @@ class Screen extends Control:
 		var e := _ease(page_t)
 		_back_button(x, 70.0)
 		_page_title(x, 170.0, "SETTINGS", "SOUND, CONTROLS AND SCREEN")
-		var w := minf(size.x - 2.0 * x, 1180.0)
-		var panel := Rect2(Vector2(x - 24 + (1.0 - e) * -50.0, 230), Vector2(w + 24, 2.0 * 44.0 + 7.0 * SET_ROW_H + 110.0))
-		draw_style_box(PoolTheme.box(PoolTheme.SHADE, 16, PoolTheme.LINE, 1, 18), panel)
-		var col_w := (panel.size.x - 96.0) * 0.5
-		var cx := panel.position.x + 32.0
-		var y := panel.position.y + 50.0
+		var w := minf(size.x - 2.0 * x, 1120.0)
+		var panel := Rect2(Vector2(x + (1.0 - e) * -40.0, 236), Vector2(w, 36.0 + 2.0 * 38.0 + 22.0 + 7.0 * SET_ROW_H + 32.0))
+		PoolTheme.panel(self, panel)
+		var gutter := 56.0
+		var col_w := (panel.size.x - 72.0 - gutter) * 0.5
+		var cx := panel.position.x + 36.0
+		var top := panel.position.y + 36.0
+		var y := top
 		slider_rects.clear()
-		for row in SETTING_ROWS:
+		for i in SETTING_ROWS.size():
+			var row: Array = SETTING_ROWS[i]
 			if row.size() == 1:
 				if row[0] == "DISPLAY":
 					# the second column
-					cx += col_w + 32.0
-					y = panel.position.y + 50.0
-				elif y > panel.position.y + 60.0:
-					y += 34.0
-				_text(Vector2(cx, y), str(row[0]), 14, PoolTheme.MUTED, 700, false, HORIZONTAL_ALIGNMENT_LEFT, -1, 3)
-				y += 30.0
+					cx += col_w + gutter
+					y = top
+				elif y > top:
+					y += 22.0
+				PoolTheme.caps(self, Vector2(cx, y + 14), str(row[0]), PoolTheme.GOLD)
+				y += 38.0
 				continue
-			_setting_row(Rect2(Vector2(cx, y), Vector2(col_w, SET_ROW_H)), row)
+			var last := i + 1 >= SETTING_ROWS.size() or (SETTING_ROWS[i + 1] as Array).size() == 1
+			_setting_row(Rect2(Vector2(cx, y), Vector2(col_w, SET_ROW_H)), row, last)
 			y += SET_ROW_H
-		var rr := Rect2(Vector2(cx, panel.end.y - 104.0), Vector2(col_w, 64))
-		_button(rr, "reset_settings", "RESET TO DEFAULTS", false)
+		var rr := Rect2(Vector2(panel.end.x - 36.0 - 220.0, panel.end.y - 32.0 - 46.0), Vector2(220, 46))
+		_button(rr, "reset_settings", "Reset to defaults", false)
 		# tucked in the bottom corner, barely there: the way to the code page
-		var jc := panel.end - Vector2(20, 20)
+		var jc := panel.end - Vector2(18, 18)
 		_hit(Rect2(jc - Vector2(11, 11), Vector2(22, 22)), "jball")
 		_jball(jc, 7.0, 0.16 + _a("jball") * 0.3, t * 0.3)
 
-	# the J ball badge, small, faded and turned
 	func _jball(c: Vector2, r: float, alpha: float, turn := 0.0) -> void:
 		if logo == null:
 			logo = load("res://icon.png")
@@ -931,125 +1007,112 @@ class Screen extends Control:
 		var e := _ease(page_t)
 		_back_button(x, 70.0)
 		_page_title(x, 170.0, "ENTER CODE", "YOU FOUND THE J BALL")
-		var pw := minf(560.0, size.x - 2.0 * x)
-		var panel := Rect2(Vector2(x - 24 + (1.0 - e) * -50.0, 240), Vector2(pw + 24, 340))
-		draw_style_box(PoolTheme.box(PoolTheme.SHADE, 16, PoolTheme.LINE, 1, 18), panel)
-		var px := panel.position.x + 28.0
-		var inner_w := panel.size.x - 56.0
-		var y := panel.position.y + 44.0
-		_text(Vector2(px, y), "CODE", 14, PoolTheme.MUTED, 700, false, HORIZONTAL_ALIGNMENT_LEFT, -1, 3)
-		_jball(Vector2(panel.end.x - 44, panel.position.y + 40), 18.0, e, sin(t * 1.3) * 0.4)
+		var pw := minf(520.0, size.x - 2.0 * x)
+		var panel := Rect2(Vector2(x + (1.0 - e) * -40.0, 236), Vector2(pw, 330))
+		PoolTheme.panel(self, panel)
+		var px := panel.position.x + 32.0
+		var inner_w := panel.size.x - 64.0
+		var y := panel.position.y + 46.0
+		PoolTheme.caps(self, Vector2(px, y), "CODE")
+		_jball(Vector2(panel.end.x - 44, panel.position.y + 40), 16.0, e, sin(t * 1.3) * 0.4)
 		# the box, shaking its head at a wrong code
 		var shake := sin(t * 55.0) * code_shake * code_shake * 14.0
-		var box := Rect2(Vector2(px + shake, y + 20), Vector2(inner_w, 76))
-		var edge := PoolTheme.DANGER if code_msg != "" else (PoolTheme.GOLD if code_edit.has_focus() else PoolTheme.LINE)
-		draw_style_box(PoolTheme.box(Color(0, 0, 0, 0.45), 12, edge, 2), box)
+		var box := Rect2(Vector2(px + shake, y + 22), Vector2(inner_w, 72))
+		var edge := PoolTheme.DANGER if code_msg != "" else (PoolTheme.GOLD if code_edit.has_focus() else Color(1, 1, 1, 0.16))
+		draw_style_box(PoolTheme.box(Color(0, 0, 0, 0.35), 12, edge, 1), box)
 		code_edit.position = box.position + Vector2(10, 4)
 		code_edit.size = box.size - Vector2(20, 8)
 		if code_msg != "":
-			_text(Vector2(px, box.end.y + 34), code_msg, 16, PoolTheme.DANGER, 600)
+			_text(Vector2(px, box.end.y + 32), code_msg, 14, PoolTheme.DANGER, 600)
 		else:
-			_text(Vector2(px, box.end.y + 34), "Some cues aren't in the shop.", 16, PoolTheme.MUTED, 400)
-		_button(Rect2(Vector2(px, panel.end.y - 104), Vector2(inner_w, 72)), "redeem", "UNLOCK")
+			_text(Vector2(px, box.end.y + 32), "Some cues aren't in the shop.", 14, PoolTheme.MUTED, 400)
+		_button(Rect2(Vector2(px, panel.end.y - 32 - 56), Vector2(inner_w, 56)), "redeem", "Unlock")
 
-	func _setting_row(r: Rect2, row: Array) -> void:
+	func _setting_row(r: Rect2, row: Array, last := false) -> void:
 		var kind: String = row[0]
 		var key: String = row[1]
-		draw_line(Vector2(r.position.x, r.end.y - 4), Vector2(r.end.x, r.end.y - 4), PoolTheme.LINE, 1.0)
-		var ctl_w := 280.0
+		if not last:
+			PoolTheme.divider(self, r.position.x, r.end.x, r.end.y)
+		var ctl_w := 250.0
 		# a switch only needs its own width; sliders and pickers take more
-		var text_w := r.size.x - (100.0 if kind == "toggle" else ctl_w + 10.0)
-		_text(r.position + Vector2(0, 26), str(row[2]), 19, PoolTheme.WHITE, 600, false, HORIZONTAL_ALIGNMENT_LEFT, text_w)
-		_text(r.position + Vector2(0, 50), _fit(str(row[3]), 14, 400, text_w), 14, PoolTheme.MUTED, 400, false, HORIZONTAL_ALIGNMENT_LEFT, text_w)
-		var cr := Rect2(Vector2(r.end.x - ctl_w, r.position.y + 8), Vector2(ctl_w, 44))
+		var text_w := r.size.x - (64.0 if kind == "toggle" else ctl_w + 20.0)
+		_text(r.position + Vector2(0, 29), str(row[2]), 17, PoolTheme.WHITE, 600, false, HORIZONTAL_ALIGNMENT_LEFT, text_w)
+		_text(r.position + Vector2(0, 49), _fit(str(row[3]), 13, 400, text_w), 13, PoolTheme.MUTED, 400, false,
+			HORIZONTAL_ALIGNMENT_LEFT, text_w)
+		var cy := r.position.y + r.size.y * 0.5
 		match kind:
 			"slider":
-				_slider(cr, key)
+				var nm := "slider:" + key
+				var track := Rect2(Vector2(r.end.x - ctl_w, cy - 10), Vector2(ctl_w - 64, 20))
+				slider_rects[key] = track
+				_hit(Rect2(Vector2(track.position.x - 12, r.position.y), Vector2(track.size.x + 24, r.size.y)), nm)
+				var rng := _slider_range(key)
+				var v := PoolSettings.f(key)
+				var a := maxf(_a(nm), 1.0 if dragging_slider == key else 0.0)
+				PoolTheme.slider(self, track, inverse_lerp(rng.x, rng.y, v), a)
+				var label := "%d%%" % int(round(v * 100.0))
+				if key == "mouse_sens":
+					label = "%.2f×" % v
+				elif key == "fov":
+					label = "%d°" % int(v)
+				_text(Vector2(r.end.x - 52, cy + 6), label, 15, PoolTheme.WHITE, 700, false, HORIZONTAL_ALIGNMENT_RIGHT, 52)
 			"toggle":
 				var nm := "tog:" + key
-				_hit(Rect2(r.position, Vector2(r.size.x, r.size.y - 6)), nm)
-				_switch(Vector2(cr.end.x - 86, cr.position.y + 2), PoolSettings.on(key), _a(nm))
+				_hit(Rect2(r.position, Vector2(r.size.x, r.size.y - 2)), nm)
+				PoolTheme.switch(self, Vector2(r.end.x - 46, cy - 13), PoolSettings.on(key), _a(nm))
 			"cycle":
 				var v := int(PoolSettings.data.get(key, 0))
 				var label := "NO CAP" if v == 0 else "%d FPS" % v
-				var lr := Rect2(Vector2(cr.end.x - 190, cr.position.y), Vector2(44, 44))
-				var rr := Rect2(Vector2(cr.end.x - 44, cr.position.y), Vector2(44, 44))
-				_hit(lr, "cyc-:" + key)
-				_hit(rr, "cyc+:" + key)
-				_text(Vector2(lr.position.x, lr.position.y + 36), "‹", 38, PoolTheme.MUTED.lerp(PoolTheme.WHITE, _a("cyc-:" + key)), 700, false,
-					HORIZONTAL_ALIGNMENT_CENTER, 44)
-				_text(Vector2(rr.position.x, rr.position.y + 36), "›", 38, PoolTheme.MUTED.lerp(PoolTheme.WHITE, _a("cyc+:" + key)), 700, false,
-					HORIZONTAL_ALIGNMENT_CENTER, 44)
-				_text(Vector2(lr.end.x, cr.position.y + 29), label, 18, PoolTheme.WHITE, 700, true,
-					HORIZONTAL_ALIGNMENT_CENTER, rr.position.x - lr.end.x, 1)
-
-	func _slider(cr: Rect2, key: String) -> void:
-		var nm := "slider:" + key
-		var track := Rect2(Vector2(cr.position.x + 4, cr.position.y + 20), Vector2(cr.size.x - 84, 6))
-		slider_rects[key] = track
-		_hit(Rect2(Vector2(track.position.x - 12, cr.position.y), Vector2(track.size.x + 24, cr.size.y)), nm)
-		var rng := _slider_range(key)
-		var v := PoolSettings.f(key)
-		var k := clampf(inverse_lerp(rng.x, rng.y, v), 0.0, 1.0)
-		var a := maxf(_a(nm), 1.0 if dragging_slider == key else 0.0)
-		draw_style_box(PoolTheme.box(Color(1, 1, 1, 0.14), 3), track)
-		draw_style_box(PoolTheme.box(PoolTheme.GOLD, 3), Rect2(track.position, Vector2(track.size.x * k, track.size.y)))
-		var knob := Vector2(track.position.x + track.size.x * k, track.position.y + 3)
-		draw_circle(knob + Vector2(0, 2), 11.0 + a * 2.0, Color(0, 0, 0, 0.4))
-		draw_circle(knob, 10.0 + a * 2.0, PoolTheme.WHITE)
-		var label := "%d%%" % int(round(v * 100.0))
-		if key == "mouse_sens":
-			label = "%.2f×" % v
-		elif key == "fov":
-			label = "%d°" % int(v)
-		_text(Vector2(track.end.x + 14, cr.position.y + 29), label, 18, PoolTheme.WHITE, 700, false, HORIZONTAL_ALIGNMENT_RIGHT, 66)
-
-	func _switch(at: Vector2, on: bool, a: float) -> void:
-		var sw := Rect2(at, Vector2(86, 40))
-		draw_style_box(PoolTheme.box((PoolTheme.FELT if on else Color(0.25, 0.26, 0.26)).lerp(Color.WHITE, a * 0.08), 20), sw)
-		var knob_x := sw.position.x + (sw.size.x - 22.0 if on else 22.0)
-		draw_circle(Vector2(knob_x, sw.position.y + 20), 15.0, PoolTheme.WHITE)
-		_text(Vector2(sw.position.x + (12.0 if on else 40.0), sw.position.y + 26), "ON" if on else "OFF",
-			13, Color(1, 1, 1, 0.85), 800)
+				var box := Rect2(Vector2(r.end.x - 176, cy - 18), Vector2(176, 36))
+				draw_style_box(PoolTheme.box(PoolTheme.RAISED, 18, PoolTheme.HAIR, 1), box)
+				for k in 2:
+					var nm := ("cyc-:" if k == 0 else "cyc+:") + key
+					var br := Rect2(Vector2(box.position.x if k == 0 else box.end.x - 40, box.position.y), Vector2(40, 36))
+					_hit(br, nm)
+					var a := _a(nm)
+					if a > 0.01:
+						draw_circle(br.get_center(), 14.0, Color(1, 1, 1, 0.08 * a), true, -1.0, true)
+					_chevron(br.get_center(), -1.0 if k == 0 else 1.0, PoolTheme.MUTED.lerp(PoolTheme.WHITE, a))
+				_text(Vector2(box.position.x + 40, cy + 6), label, 15, PoolTheme.WHITE, 700, true,
+					HORIZONTAL_ALIGNMENT_CENTER, box.size.x - 80, 1)
 
 	# --- the profile corner -------------------------------------------------
 
 	func _draw_chip() -> void:
 		if profile == null:
 			return
-		var w := 340.0
-		var h := 78.0
-		var r := Rect2(Vector2(size.x - w - 40.0, 34.0), Vector2(w, h))
+		var w := 320.0
+		var h := 64.0
+		var r := Rect2(Vector2(size.x - w - 40.0, 36.0), Vector2(w, h))
 		_hit(r, "chip")
 		var a := _a("chip")
-		var rr := Rect2(r.position - Vector2(0, a * 2.0), r.size)
-		draw_style_box(PoolTheme.box(Color(0.045, 0.05, 0.05, 0.84).lerp(Color(0.09, 0.1, 0.1, 0.92), a), 16,
-			Color(1, 1, 1, 0.10 + a * 0.2), 1, 10), rr)
-		var p := rr.position
+		draw_style_box(PoolTheme.box(PoolTheme.PANEL.lerp(Color(0.1, 0.105, 0.11, 0.94), a), 14,
+			Color(1, 1, 1, 0.08 + a * 0.14), 1), r)
+		var p := r.position
 		if not profile.signed_in:
-			var ic := p + Vector2(40, h * 0.5)
-			draw_circle(ic, 24.0, Color("1b2838"))
-			draw_arc(ic, 24.0, 0.0, TAU, 40, Color(1, 1, 1, 0.18), 1.5, true)
-			_person(ic, 13.0, PoolTheme.WHITE)
-			_text(p + Vector2(78, 35), "SIGN IN THROUGH STEAM", 19, PoolTheme.WHITE.lerp(PoolTheme.GOLD, a), 800, true,
-				HORIZONTAL_ALIGNMENT_LEFT, -1, 1)
-			_text(p + Vector2(78, 57), "Keep your level, stats and trophies", 13, PoolTheme.MUTED, 500)
+			var ic := p + Vector2(34, h * 0.5)
+			draw_circle(ic, 20.0, Color("1b2838"), true, -1.0, true)
+			_person(ic, 11.0, PoolTheme.WHITE)
+			_text(p + Vector2(66, 29), "Sign in with Steam", 16, PoolTheme.WHITE.lerp(PoolTheme.GOLD, a), 700)
+			_text(p + Vector2(66, 48), "Save your level, stats and trophies", 12, PoolTheme.MUTED, 400)
+			_text(Vector2(r.end.x - 34, p.y + h * 0.5 + 7), "›", 22, PoolTheme.MUTED.lerp(PoolTheme.WHITE, a), 700, false,
+				HORIZONTAL_ALIGNMENT_CENTER, 20)
 			return
-		_avatar(Rect2(p + Vector2(11, 11), Vector2(56, 56)), 10)
-		var tx := p.x + 80.0
+		_avatar(Rect2(p + Vector2(10, 10), Vector2(44, 44)), 10)
+		var tx := p.x + 66.0
 		# trophies on the right
 		var cnt := _num(int(profile.stats.trophies))
-		var cw := _text_w(cnt, 22, 800, true)
-		var tr_x := rr.end.x - 18.0 - cw
-		_text(Vector2(tr_x, p.y + 49), cnt, 22, PoolTheme.WHITE, 800, true)
-		_trophy(Vector2(tr_x - 20, p.y + 40), 26.0, PoolTheme.GOLD)
-		var name_w := tr_x - 46.0 - tx
-		_text(Vector2(tx, p.y + 34), _fit(profile.username, 19, 700, name_w), 19, PoolTheme.WHITE, 700)
+		var cw := _text_w(cnt, 18, 800, true)
+		var tr_x := r.end.x - 16.0 - cw
+		_text(Vector2(tr_x, p.y + 39), cnt, 18, PoolTheme.WHITE, 800, true)
+		_trophy(Vector2(tr_x - 16, p.y + 32), 20.0, PoolTheme.GOLD)
+		var name_w := tr_x - 36.0 - tx
+		_text(Vector2(tx, p.y + 28), _fit(profile.username, 16, 700, name_w), 16, PoolTheme.WHITE, 700)
 		var lv := "LVL %d" % profile.level()
-		_text(Vector2(tx, p.y + 60), lv, 13, PoolTheme.GOLD, 800, false, HORIZONTAL_ALIGNMENT_LEFT, -1, 2)
-		var bx := tx + _text_w(lv, 13, 800, false, 2) + 10.0
+		PoolTheme.caps(self, Vector2(tx, p.y + 48), lv, PoolTheme.GOLD, 10)
+		var bx := tx + _text_w(lv, 10, 700, false, 3) + 10.0
 		var prog := profile.level_progress()
-		_bar(Rect2(Vector2(bx, p.y + 52), Vector2(maxf(20.0, tr_x - 46.0 - bx), 6)), float(prog.x) / float(prog.y))
+		_bar(Rect2(Vector2(bx, p.y + 43), Vector2(maxf(20.0, tr_x - 36.0 - bx), 4)), float(prog.x) / float(prog.y))
 
 	func _bar(r: Rect2, k: float) -> void:
 		draw_style_box(PoolTheme.box(Color(1, 1, 1, 0.12), int(r.size.y * 0.5)), r)
@@ -1100,63 +1163,69 @@ class Screen extends Control:
 		page_t = pt
 		hits.clear()
 		var e := _ease(page_t)
-		draw_rect(Rect2(Vector2.ZERO, size), Color(0, 0, 0, 0.5 * e))
+		draw_rect(Rect2(Vector2.ZERO, size), Color(0, 0, 0, 0.55 * e))
 		_hit(Rect2(Vector2.ZERO, size), "close_bg")
 
-		var pw := minf(780.0, size.x - 120.0)
-		var panel := Rect2(Vector2(size.x - pw - 40.0 + (1.0 - e) * 90.0, 34.0), Vector2(pw, size.y - 68.0))
+		var pw := minf(760.0, size.x - 120.0)
+		var panel := Rect2(Vector2(size.x - pw - 40.0 + (1.0 - e) * 80.0, 36.0), Vector2(pw, size.y - 72.0))
 		_hit(panel, "panel")
-		draw_style_box(PoolTheme.box(Color(0.04, 0.045, 0.045, 0.95), 20, PoolTheme.LINE, 1, 26), panel)
+		PoolTheme.panel(self, panel, Color(0, 0, 0, 0), 18)
 		var px := panel.position.x + 40.0
 		var inner := pw - 80.0
 		var y := panel.position.y + 40.0
 		var st: Dictionary = profile.stats
 
-		# close
-		var cr := Rect2(Vector2(panel.end.x - 140, y - 8), Vector2(110, 40))
-		_hit(cr, "close")
-		_text(Vector2(cr.position.x, y + 20), "CLOSE  ✕", 16, PoolTheme.MUTED.lerp(PoolTheme.WHITE, _a("close")),
-			700, true, HORIZONTAL_ALIGNMENT_RIGHT, cr.size.x, 2)
+		# close: a round button in the corner
+		var cc := Vector2(panel.end.x - 42, y + 8)
+		_hit(Rect2(cc - Vector2(20, 20), Vector2(40, 40)), "close")
+		var ca := _a("close")
+		draw_circle(cc, 18.0, Color(1, 1, 1, 0.05 + ca * 0.08), true, -1.0, true)
+		draw_arc(cc, 18.0, 0.0, TAU, 40, Color(1, 1, 1, 0.14 + ca * 0.2), 1.0, true)
+		var xc := PoolTheme.MUTED.lerp(PoolTheme.WHITE, ca)
+		draw_line(cc + Vector2(-5, -5), cc + Vector2(5, 5), xc, 2.0, true)
+		draw_line(cc + Vector2(5, -5), cc + Vector2(-5, 5), xc, 2.0, true)
 
 		# who
-		_avatar(Rect2(Vector2(px, y + 8), Vector2(116, 116)), 18)
-		var nx := px + 144.0
-		_text(Vector2(nx, y + 58), _fit(profile.username, 44, 800, inner - 144.0 - 120.0), 44, PoolTheme.WHITE, 800, true)
+		_avatar(Rect2(Vector2(px, y), Vector2(96, 96)), 16)
+		var nx := px + 120.0
+		_text(Vector2(nx, y + 40), _fit(profile.username, 38, 800, inner - 120.0 - 70.0), 38, PoolTheme.WHITE, 800, true)
 		var via := "TEST PROFILE  ·  NO STEAM IN THIS BUILD" if profile.test_profile else "SIGNED IN THROUGH STEAM"
-		_text(Vector2(nx + 2, y + 86), via, 13, PoolTheme.GOLD, 700, false, HORIZONTAL_ALIGNMENT_LEFT, -1, 3)
-		var so := Rect2(Vector2(nx - 4, y + 98), Vector2(110, 32))
+		PoolTheme.caps(self, Vector2(nx + 2, y + 64), via, PoolTheme.GOLD, 11)
+		var so := Rect2(Vector2(nx, y + 76), Vector2(100, 28))
 		_hit(so, "signout")
-		_text(Vector2(nx + 2, y + 120), "SIGN OUT", 14, PoolTheme.MUTED.lerp(PoolTheme.DANGER, _a("signout")), 700, false,
-			HORIZONTAL_ALIGNMENT_LEFT, -1, 2)
-		y += 150.0
+		var sa := _a("signout")
+		draw_style_box(PoolTheme.box(Color(PoolTheme.DANGER, 0.12 * sa), 14, Color(1, 1, 1, 0.14).lerp(PoolTheme.DANGER, sa), 1), so)
+		_text(Vector2(so.position.x, so.position.y + 19), "SIGN OUT", 11, PoolTheme.MUTED.lerp(PoolTheme.DANGER, sa), 700, false,
+			HORIZONTAL_ALIGNMENT_CENTER, so.size.x, 2)
+		y += 128.0
 
 		# level
-		var lvl_r := Rect2(Vector2(px, y), Vector2(inner, 104))
-		draw_style_box(PoolTheme.box(Color(1, 1, 1, 0.04), 14, PoolTheme.LINE, 1), lvl_r)
+		var lvl_r := Rect2(Vector2(px, y), Vector2(inner, 112))
+		draw_style_box(PoolTheme.box(PoolTheme.RAISED, 12, PoolTheme.HAIR, 1), lvl_r)
 		var prog := profile.level_progress()
-		_text(Vector2(px + 22, y + 44), "LEVEL %d" % profile.level(), 32, PoolTheme.WHITE, 800, true, HORIZONTAL_ALIGNMENT_LEFT, -1, 1)
-		_text(Vector2(px + 22, y + 44), "%s / %s XP" % [_num(prog.x), _num(prog.y)], 16, PoolTheme.MUTED, 600, false,
+		PoolTheme.caps(self, Vector2(px + 22, y + 30), "LEVEL", PoolTheme.FAINT, 11)
+		_text(Vector2(px + 22, y + 62), str(profile.level()), 34, PoolTheme.WHITE, 800, true)
+		_text(Vector2(px + 22, y + 58), "%s / %s XP" % [_num(prog.x), _num(prog.y)], 14, PoolTheme.MUTED, 600, false,
 			HORIZONTAL_ALIGNMENT_RIGHT, inner - 44.0)
-		_bar(Rect2(Vector2(px + 22, y + 58), Vector2(inner - 44, 10)), float(prog.x) / float(prog.y))
-		_text(Vector2(px + 22, y + 90), "Earn XP beating the house player (more the tougher he is). Online matches are coming soon.",
-			14, PoolTheme.MUTED, 400, false, HORIZONTAL_ALIGNMENT_LEFT, inner - 44.0)
-		y += 122.0
+		_bar(Rect2(Vector2(px + 22, y + 74), Vector2(inner - 44, 6)), float(prog.x) / float(prog.y))
+		_text(Vector2(px + 22, y + 100), _fit("Earn XP beating the house player, more the tougher he is.", 12, 400, inner - 44.0),
+			12, PoolTheme.FAINT, 400)
+		y += 128.0
 
 		# trophies
-		var tr_r := Rect2(Vector2(px, y), Vector2(inner, 96))
-		draw_style_box(PoolTheme.box(Color(PoolTheme.GOLD.r, PoolTheme.GOLD.g, PoolTheme.GOLD.b, 0.08), 14,
-			Color(PoolTheme.GOLD.r, PoolTheme.GOLD.g, PoolTheme.GOLD.b, 0.35), 1), tr_r)
-		_trophy(Vector2(px + 52, y + 50), 58.0, PoolTheme.GOLD)
-		_text(Vector2(px + 100, y + 56), _num(int(st.trophies)), 44, PoolTheme.WHITE, 800, true)
-		_text(Vector2(px + 102, y + 80), "TROPHIES", 13, PoolTheme.GOLD, 700, false, HORIZONTAL_ALIGNMENT_LEFT, -1, 3)
-		draw_multiline_string(PoolTheme.font(400), Vector2(px + 250, y + 42),
+		var tr_r := Rect2(Vector2(px, y), Vector2(inner, 84))
+		draw_style_box(PoolTheme.box(Color(PoolTheme.GOLD, 0.07), 12, Color(PoolTheme.GOLD, 0.3), 1), tr_r)
+		_trophy(Vector2(px + 44, y + 44), 44.0, PoolTheme.GOLD)
+		_text(Vector2(px + 84, y + 48), _num(int(st.trophies)), 34, PoolTheme.WHITE, 800, true)
+		PoolTheme.caps(self, Vector2(px + 86, y + 68), "TROPHIES", PoolTheme.GOLD, 11)
+		draw_multiline_string(PoolTheme.font(400), Vector2(px + 240, y + 38),
 			"One for every online match you win. Multiplayer is on its way.", HORIZONTAL_ALIGNMENT_LEFT,
-			inner - 272.0, 15, 2, Color(1, 1, 1, 0.72))
-		y += 124.0
+			inner - 262.0, 14, 2, Color(1, 1, 1, 0.66))
+		y += 112.0
 
 		# everything else
-		_text(Vector2(px, y), "STATS", 14, PoolTheme.MUTED, 700, false, HORIZONTAL_ALIGNMENT_LEFT, -1, 3)
-		y += 18.0
+		PoolTheme.caps(self, Vector2(px, y), "STATS", PoolTheme.GOLD)
+		y += 16.0
 		var bot_games := int(st.bot_wins) + int(st.bot_losses)
 		var cards := [
 			["GAMES PLAYED", _num(profile.games_played())],
@@ -1176,14 +1245,14 @@ class Screen extends Control:
 			["TIMES DECKED", _num(int(st.knockdowns))],
 		]
 		var cols := 3
-		var gap := 12.0
+		var gap := 10.0
 		var cw := (inner - gap * float(cols - 1)) / float(cols)
-		var ch := 70.0
+		var ch := minf(72.0, (panel.end.y - 36.0 - y - gap * 4.0) / 5.0)
 		for i in cards.size():
 			var c := Rect2(Vector2(px + float(i % cols) * (cw + gap), y + float(i / cols) * (ch + gap)), Vector2(cw, ch))
-			draw_style_box(PoolTheme.box(Color(1, 1, 1, 0.045), 12), c)
-			_text(c.position + Vector2(16, 36), str(cards[i][1]), 26, PoolTheme.WHITE, 800, true)
-			_text(c.position + Vector2(17, 57), str(cards[i][0]), 11, PoolTheme.MUTED, 700, false, HORIZONTAL_ALIGNMENT_LEFT, -1, 2)
+			draw_style_box(PoolTheme.box(PoolTheme.RAISED, 10, PoolTheme.HAIR, 1), c)
+			_text(c.position + Vector2(16, ch * 0.5 + 4), str(cards[i][1]), 22, PoolTheme.WHITE, 800, true)
+			PoolTheme.caps(self, c.position + Vector2(17, ch * 0.5 + 22), str(cards[i][0]), PoolTheme.FAINT, 10)
 
 	# --- little helpers ---------------------------------------------------------
 
@@ -1191,11 +1260,12 @@ class Screen extends Control:
 		if toast_t <= 0.0 or toast == "":
 			return
 		var a := clampf(toast_t / 0.4, 0.0, 1.0) * clampf((3.5 - toast_t) / 0.2, 0.0, 1.0)
-		var fs := 17
-		var w := _text_w(toast, fs, 600) + 48.0
-		var r := Rect2(Vector2((size.x - w) * 0.5, size.y - 150.0 + (1.0 - a) * 12.0), Vector2(w, 50))
-		draw_style_box(PoolTheme.box(Color(0.05, 0.055, 0.055, 0.94 * a), 25, Color(PoolTheme.GOLD.r, PoolTheme.GOLD.g, PoolTheme.GOLD.b, 0.5 * a), 1, 10), r)
-		_text(Vector2(r.position.x, r.position.y + 31), toast, fs, Color(1, 1, 1, a), 600, false, HORIZONTAL_ALIGNMENT_CENTER, r.size.x)
+		var fs := 15
+		var w := _text_w(toast, fs, 600) + 56.0
+		var r := Rect2(Vector2((size.x - w) * 0.5, size.y - 140.0 + (1.0 - a) * 12.0), Vector2(w, 44))
+		draw_style_box(PoolTheme.box(Color(0.06, 0.065, 0.07, 0.96 * a), 22, Color(1, 1, 1, 0.12 * a), 1), r)
+		draw_circle(Vector2(r.position.x + 22, r.get_center().y), 3.5, Color(PoolTheme.GOLD, a), true, -1.0, true)
+		_text(Vector2(r.position.x + 34, r.position.y + 28), toast, fs, Color(1, 1, 1, a), 600)
 
 	func _fit(s: String, fs: int, weight: int, max_w: float) -> String:
 		if _text_w(s, fs, weight) <= max_w:

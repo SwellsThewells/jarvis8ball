@@ -20,8 +20,9 @@ something goes wrong.
 2. Press **F5**. The first launch takes a second or two while textures are generated.
 
 You land on the title screen, with the table turning slowly in the room
-behind it. **Play** picks how good the house player is, 1 to 10, and whether
-the aim guide is on. **Shop** holds the cues, each one turning in 3D beside
+behind it. **Play** asks how you want to play: **VS Computer**, or
+**Multiplayer** (coming soon). VS Computer picks how good the house player
+is, 1 to 10, and whether the aim guide is on. **Shop** holds the cues, each one turning in 3D beside
 the list (drag it to spin it yourself). **How to play** has the controls and
 the house rules, so nothing is printed over the table while you're playing.
 **Settings** has sound, controls and screen options, and your profile sits
