@@ -40,6 +40,11 @@ sword guard, gems, and a crystal or orb `pommel` on the butt. All of it is
 built in `scripts/pool_cue_model.gd`. Price 0 means free, which is every cue
 for now.
 
+Some cues are secret: they stay out of the shop until they're unlocked with a
+code. The way in is hidden somewhere on the Settings page. The codes, and the
+cue each one gives you, are `SECRET_CODES` in `scripts/pool_cues.gd`, and a
+cue is kept out of the shop by giving it `"secret": true`.
+
 ## Settings
 
 **Settings** on the title screen has the volume for all sounds, sound

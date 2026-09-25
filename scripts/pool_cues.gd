@@ -521,7 +521,29 @@ const CUES := [
 		"wrap": {"p": "linen", "a": "4a3a28"},
 		"sleeve": {"p": "bone", "a": "efe4cc", "b": "2a2018"},
 	},
+	# Secret: not in the shop until it's unlocked with a code (SECRET_CODES).
+	# Tousled chestnut hair carved into the butt, blue-grey eyes at the joint,
+	# and skylight white at the end, with the sun coming through.
+	{
+		"id": "dylan", "name": "Dylan Jarvis", "tag": "Secret", "secret": true,
+		"blurb": "Tousled chestnut grain, blue-grey eyes at the joint and skylight white on the butt. You had to know the code.",
+		"price": 0, "tip": "2a3a4a", "ferrule": "f2eee6",
+		"shaft": {"p": "wood", "a": "ecd2b8", "r": 0.25, "coat": 0.8},
+		"joint": {"p": "plain", "a": "d8dadc", "m": 0.6, "r": 0.25},
+		"rings": {"p": "plain", "a": "6f8fa6", "m": 0.5, "r": 0.25},
+		"forearm": {"p": "tiger", "a": "8a5a32", "b": "3a2210", "r": 0.3, "coat": 0.9, "flutes": 9, "depth": 0.12, "twist": 0.6},
+		"wrap": {"p": "leather", "a": "2a1a10"},
+		"sleeve": {"p": "gradient", "a": "f4f2ec", "b": "cfd6d8", "c": "8a949a", "g": 0.2, "coat": 1.0},
+		"gems": {"color": "8fb4c8", "count": 2, "at": [1.07], "glow": 0.9, "size": 0.0038},
+		"pommel": {"shape": "orb", "color": "f4f6f8", "glow": 0.6, "size": 0.011, "metal_color": "d8dadc"},
+		"bands": [0.79],
+	},
 ]
+
+# Codes typed in on the hidden page (click the little J ball in Settings).
+const SECRET_CODES := {
+	"JARVIS123": "dylan",
+}
 
 
 static func count() -> int:
@@ -533,6 +555,21 @@ static func by_id(id: String) -> Dictionary:
 		if c.id == id:
 			return c
 	return CUES[0]
+
+
+# The cues the shop lists, as indices into CUES: everything but the secret
+# ones you haven't unlocked yet.
+static func shop_indices(owned: Array) -> Array:
+	var out: Array = []
+	for i in CUES.size():
+		if not bool(CUES[i].get("secret", false)) or owned.has(CUES[i].id):
+			out.append(i)
+	return out
+
+
+# The cue a code unlocks, or "" if it isn't one.
+static func redeem(code: String) -> String:
+	return str(SECRET_CODES.get(code.strip_edges().to_upper(), ""))
 
 
 static func index_of(id: String) -> int:
