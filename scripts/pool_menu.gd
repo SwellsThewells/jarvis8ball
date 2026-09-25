@@ -206,6 +206,12 @@ class Screen extends Control:
 	var toast := ""
 	var toast_t := 0.0
 
+	# the secret code page, behind the little J ball in Settings
+	var code_edit: LineEdit
+	var code_msg := ""
+	var code_shake := 0.0
+	var _reveal_pick := false     # scroll the shop to the picked cue on its next draw
+
 	func _ready() -> void:
 		mouse_filter = Control.MOUSE_FILTER_STOP
 		focus_mode = Control.FOCUS_ALL
@@ -217,11 +223,36 @@ class Screen extends Control:
 		list_view.visible = false
 		add_child(list_view)
 		list_view.draw.connect(_draw_list)
+		# a real text box for typing codes; we draw its frame ourselves
+		code_edit = LineEdit.new()
+		code_edit.visible = false
+		code_edit.max_length = 24
+		code_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
+		code_edit.placeholder_text = "TYPE A CODE"
+		code_edit.context_menu_enabled = false
+		code_edit.add_theme_font_override("font", PoolTheme.font(800, true, 6))
+		code_edit.add_theme_font_size_override("font_size", 36)
+		code_edit.add_theme_color_override("font_color", PoolTheme.WHITE)
+		code_edit.add_theme_color_override("font_placeholder_color", Color(1, 1, 1, 0.22))
+		code_edit.add_theme_color_override("caret_color", PoolTheme.GOLD)
+		for st in ["normal", "focus", "read_only"]:
+			code_edit.add_theme_stylebox_override(st, StyleBoxEmpty.new())
+		code_edit.text_changed.connect(func(s: String):
+			var up := s.to_upper()
+			if up != s:
+				var c := code_edit.caret_column
+				code_edit.text = up
+				code_edit.caret_column = c
+			code_msg = ""
+		)
+		code_edit.text_submitted.connect(func(_s: String): _redeem())
+		add_child(code_edit)
 
 	func _process(delta: float) -> void:
 		t += delta
 		page_t = minf(1.0, page_t + delta * 4.5)
 		toast_t = maxf(0.0, toast_t - delta)
+		code_shake = maxf(0.0, code_shake - delta * 2.5)
 		if page == "profile" and (profile == null or not profile.signed_in):
 			go("main")
 		scroll = lerpf(scroll, scroll_to, 1.0 - exp(-14.0 * delta))
@@ -239,6 +270,14 @@ class Screen extends Control:
 		page = p
 		page_t = 0.0
 		hot = ""
+		if code_edit != null:
+			code_edit.visible = p == "code"
+			code_edit.text = ""
+			code_msg = ""
+			if p == "code":
+				code_edit.grab_focus.call_deferred()
+			else:
+				code_edit.release_focus()
 		if preview != null:
 			preview.set_live(p == "shop")
 			if p == "shop":
@@ -290,7 +329,7 @@ class Screen extends Control:
 				_press(hot)
 
 	func _scroll_by(dy: float) -> void:
-		var content := float(PoolCues.CUES.size()) * ROW_H
+		var content := float(PoolCues.shop_indices(state.owned).size()) * ROW_H
 		scroll_to = clampf(scroll_to + dy, 0.0, maxf(0.0, content - list_rect.size.y))
 
 	func _update_hot() -> void:
@@ -299,7 +338,7 @@ class Screen extends Control:
 			if (h[0] as Rect2).has_point(hover):
 				hot = str(h[1])
 		if hot != _last_hot:
-			if hot != "" and not hot.begins_with("cue:") and not (hot in ["panel", "close_bg"]):
+			if hot != "" and not hot.begins_with("cue:") and not (hot in ["panel", "close_bg", "jball"]):
 				ui_sound.emit("tick")
 			_last_hot = hot
 
@@ -344,7 +383,11 @@ class Screen extends Control:
 			ui_sound.emit("click")
 			quit_pressed.emit()
 		elif name == "back":
-			go("main")
+			go("settings" if page == "code" else "main")
+		elif name == "jball":
+			go("code")
+		elif name == "redeem":
+			_redeem()
 		elif name == "start":
 			ui_sound.emit("start")
 			start_pressed.emit(int(state.difficulty))
@@ -385,15 +428,41 @@ class Screen extends Control:
 		state_changed.emit(state)
 		ui_sound.emit("equip")
 
+	func _redeem() -> void:
+		var id := PoolCues.redeem(code_edit.text)
+		if id == "":
+			code_msg = "That code doesn't do anything." if code_edit.text.strip_edges() != "" else "Type a code first."
+			code_shake = 1.0
+			ui_sound.emit("click")
+			code_edit.grab_focus.call_deferred()
+			return
+		var cue := PoolCues.by_id(id)
+		var owned: Array = state.owned
+		var fresh := not owned.has(id)
+		if fresh:
+			owned.append(id)
+		state.equipped = id
+		state_changed.emit(state)
+		picked_cue = PoolCues.index_of(id)
+		_reveal_pick = true
+		go("shop")
+		ui_sound.emit("start" if fresh else "equip")
+		show_toast(("Unlocked: %s" if fresh else "You've already got %s. It's in your hand.") % str(cue.name))
+
 	func _unhandled_key_input(ev: InputEvent) -> void:
 		if not is_visible_in_tree() or not (ev is InputEventKey and ev.pressed and not ev.echo):
 			return
 		match ev.keycode:
 			KEY_ESCAPE, KEY_BACKSPACE:
-				if page != "main":
+				if page == "code":
+					if ev.keycode == KEY_ESCAPE:
+						go("settings")
+				elif page != "main":
 					go("main")
 			KEY_ENTER, KEY_KP_ENTER:
-				if page == "play":
+				if page == "code":
+					_redeem()
+				elif page == "play":
 					_press("start")
 				elif page == "main":
 					go("play")
@@ -442,9 +511,15 @@ class Screen extends Control:
 		return Vector2(0.0, 1.0)
 
 	func _pick_step(d: int) -> void:
-		picked_cue = clampi(picked_cue + d, 0, PoolCues.CUES.size() - 1)
-		_press("cue:%d" % picked_cue)
-		var top := float(picked_cue) * ROW_H
+		var list := PoolCues.shop_indices(state.owned)
+		var at := clampi(list.find(picked_cue) + d, 0, list.size() - 1)
+		_press("cue:%d" % int(list[at]))
+		_scroll_to_pick()
+
+	# scrolls the shop list just far enough to show the picked cue
+	func _scroll_to_pick() -> void:
+		var row := maxi(0, PoolCues.shop_indices(state.owned).find(picked_cue))
+		var top := float(row) * ROW_H
 		if top < scroll_to:
 			scroll_to = top
 		elif top + ROW_H > scroll_to + list_rect.size.y:
@@ -487,6 +562,8 @@ class Screen extends Control:
 				_draw_info()
 			"settings":
 				_draw_settings()
+			"code":
+				_draw_code()
 			"profile":
 				_draw_profile()
 		if page != "profile":
@@ -665,7 +742,8 @@ class Screen extends Control:
 		var x := 84.0
 		var e := _ease(page_t)
 		_back_button(x, 70.0)
-		_page_title(x, 170.0, "SHOP", "%d CUES, ALL FREE" % PoolCues.CUES.size())
+		var shop := PoolCues.shop_indices(state.owned)
+		_page_title(x, 170.0, "SHOP", "%d CUES, ALL FREE" % shop.size())
 
 		# the list: its frame here, its rows drawn clipped inside list_view
 		var lw := 420.0
@@ -673,15 +751,19 @@ class Screen extends Control:
 		draw_style_box(PoolTheme.box(PoolTheme.SHADE, 14, PoolTheme.LINE, 1, 12), list_rect.grow(8))
 		list_view.position = list_rect.position
 		list_view.size = list_rect.size
+		if _reveal_pick:
+			_reveal_pick = false
+			_scroll_to_pick()
+			scroll = scroll_to
 		list_view.queue_redraw()
-		for i in PoolCues.CUES.size():
-			var r := _row_rect(i)
+		for row in shop.size():
+			var r := _row_rect(row)
 			r.position += list_rect.position
 			var vis := r.intersection(list_rect)
 			if vis.size.y > 2.0:
-				_hit(vis, "cue:%d" % i)
+				_hit(vis, "cue:%d" % int(shop[row]))
 		# scroll bar
-		var content := float(PoolCues.CUES.size()) * ROW_H
+		var content := float(shop.size()) * ROW_H
 		if content > list_rect.size.y:
 			var frac := list_rect.size.y / content
 			var bar_h := list_rect.size.y * frac
@@ -727,10 +809,12 @@ class Screen extends Control:
 		var font_b := PoolTheme.font(700)
 		var font_t := PoolTheme.font(700, false, 2)
 		var font_k := PoolTheme.font(800, false, 2)
-		for i in PoolCues.CUES.size():
-			var r := _row_rect(i)
+		var shop := PoolCues.shop_indices(owned)
+		for row in shop.size():
+			var r := _row_rect(row)
 			if r.end.y < 0.0 or r.position.y > c.size.y:
 				continue
+			var i: int = shop[row]
 			var cue: Dictionary = PoolCues.CUES[i]
 			var a := _a("cue:%d" % i)
 			var on := picked_cue == i
@@ -745,8 +829,8 @@ class Screen extends Control:
 			c.draw_style_box(PoolTheme.box(cols[1], 4), Rect2(sw.position, Vector2(sw.size.x, sw.size.y * 0.5)))
 			c.draw_string(font_b, r.position + Vector2(36, 32), str(cue.name), HORIZONTAL_ALIGNMENT_LEFT, -1, 21, PoolTheme.WHITE)
 			c.draw_string(font_t, r.position + Vector2(36, 54), str(cue.tag).to_upper(), HORIZONTAL_ALIGNMENT_LEFT, -1, 12, PoolTheme.MUTED)
-			var badge := "EQUIPPED" if equipped else ("OWNED" if owned.has(cue.id) else "FREE")
-			var bcol := PoolTheme.FELT_HI if equipped else (PoolTheme.MUTED if owned.has(cue.id) else PoolTheme.GOLD)
+			var badge := "EQUIPPED" if equipped else ("SECRET" if cue.get("secret", false) else ("OWNED" if owned.has(cue.id) else "FREE"))
+			var bcol := PoolTheme.FELT_HI if equipped else (PoolTheme.GOLD if cue.get("secret", false) else (PoolTheme.MUTED if owned.has(cue.id) else PoolTheme.GOLD))
 			var bw := font_k.get_string_size(badge, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x + 18.0
 			var brr := Rect2(Vector2(r.end.x - bw - 14, r.position.y + 22), Vector2(bw, 24))
 			c.draw_style_box(PoolTheme.box(Color(bcol.r, bcol.g, bcol.b, 0.16), 12, Color(bcol.r, bcol.g, bcol.b, 0.7), 1), brr)
@@ -825,6 +909,48 @@ class Screen extends Control:
 			y += SET_ROW_H
 		var rr := Rect2(Vector2(cx, panel.end.y - 104.0), Vector2(col_w, 64))
 		_button(rr, "reset_settings", "RESET TO DEFAULTS", false)
+		# tucked in the bottom corner, barely there: the way to the code page
+		var jc := panel.end - Vector2(20, 20)
+		_hit(Rect2(jc - Vector2(11, 11), Vector2(22, 22)), "jball")
+		_jball(jc, 7.0, 0.16 + _a("jball") * 0.3, t * 0.3)
+
+	# the J ball badge, small, faded and turned
+	func _jball(c: Vector2, r: float, alpha: float, turn := 0.0) -> void:
+		if logo == null:
+			logo = load("res://icon.png")
+		if logo == null:
+			return
+		draw_set_transform(c, turn, Vector2.ONE)
+		draw_texture_rect(logo, Rect2(Vector2(-r, -r), Vector2(r, r) * 2.0), false, Color(1, 1, 1, alpha))
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+	# --- secret code ------------------------------------------------------
+
+	func _draw_code() -> void:
+		var x := 84.0
+		var e := _ease(page_t)
+		_back_button(x, 70.0)
+		_page_title(x, 170.0, "ENTER CODE", "YOU FOUND THE J BALL")
+		var pw := minf(560.0, size.x - 2.0 * x)
+		var panel := Rect2(Vector2(x - 24 + (1.0 - e) * -50.0, 240), Vector2(pw + 24, 340))
+		draw_style_box(PoolTheme.box(PoolTheme.SHADE, 16, PoolTheme.LINE, 1, 18), panel)
+		var px := panel.position.x + 28.0
+		var inner_w := panel.size.x - 56.0
+		var y := panel.position.y + 44.0
+		_text(Vector2(px, y), "CODE", 14, PoolTheme.MUTED, 700, false, HORIZONTAL_ALIGNMENT_LEFT, -1, 3)
+		_jball(Vector2(panel.end.x - 44, panel.position.y + 40), 18.0, e, sin(t * 1.3) * 0.4)
+		# the box, shaking its head at a wrong code
+		var shake := sin(t * 55.0) * code_shake * code_shake * 14.0
+		var box := Rect2(Vector2(px + shake, y + 20), Vector2(inner_w, 76))
+		var edge := PoolTheme.DANGER if code_msg != "" else (PoolTheme.GOLD if code_edit.has_focus() else PoolTheme.LINE)
+		draw_style_box(PoolTheme.box(Color(0, 0, 0, 0.45), 12, edge, 2), box)
+		code_edit.position = box.position + Vector2(10, 4)
+		code_edit.size = box.size - Vector2(20, 8)
+		if code_msg != "":
+			_text(Vector2(px, box.end.y + 34), code_msg, 16, PoolTheme.DANGER, 600)
+		else:
+			_text(Vector2(px, box.end.y + 34), "Some cues aren't in the shop.", 16, PoolTheme.MUTED, 400)
+		_button(Rect2(Vector2(px, panel.end.y - 104), Vector2(inner_w, 72)), "redeem", "UNLOCK")
 
 	func _setting_row(r: Rect2, row: Array) -> void:
 		var kind: String = row[0]

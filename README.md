@@ -40,6 +40,11 @@ sword guard, gems, and a crystal or orb `pommel` on the butt. All of it is
 built in `scripts/pool_cue_model.gd`. Price 0 means free, which is every cue
 for now.
 
+Some cues are secret: they stay out of the shop until they're unlocked with a
+code. The way in is hidden somewhere on the Settings page. The codes, and the
+cue each one gives you, are `SECRET_CODES` in `scripts/pool_cues.gd`, and a
+cue is kept out of the shop by giving it `"secret": true`.
+
 ## Settings
 
 **Settings** on the title screen has the volume for all sounds, sound
@@ -69,11 +74,11 @@ played, drinks, punches landed, times decked). It's in `scripts/pool_profile.gd`
   Anything you did before ever signing in carries over to the first account
   that signs in.
 
-Steam isn't in the project yet, and the game runs fine without it. To switch
-it on:
+[GodotSteam](https://godotsteam.com) (the GDExtension) is already in
+`addons/godotsteam`, and the game still runs fine if Steam isn't open. To
+finish setting it up:
 
-1. Add [GodotSteam](https://godotsteam.com) (the GDExtension from the Asset
-   Library) to the project.
+1. Open the project in the editor once so Godot picks up the extension.
 2. Put your app ID in `APP_ID` in `scripts/pool_profile.gd`, or in
    `steam_appid.txt` next to the exe. Until then it's 480, Valve's Spacewar
    test app, so sign-in can be tried now; stats won't stick on Spacewar.
