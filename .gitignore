@@ -1,0 +1,18 @@
+# Godot's import cache and editor state (rebuilt on open; also holds export credentials)
+.godot/
+*.tmp
+
+# Loose export output (the packaged build lives in build/ as a zip)
+*.pck
+/*.exe
+
+# OS clutter
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Old packaged builds: too big to keep in history
+*.zip
+
+# Copies Godot makes of a locked extension DLL while the editor is open
+~*
