@@ -142,16 +142,26 @@ func _worker() -> void:
 		pipe.close()
 
 
-# Discord listens on the first free of ten pipes.
+# Discord listens on the first free of ten pipes. Windows takes a pipe's
+# name written two ways, and not every build of Godot passes both through
+# untouched, so each is tried.
 func _connect() -> FileAccess:
-	for i in 10:
-		var f := FileAccess.open("\\\\?\\pipe\\discord-ipc-%d" % i, FileAccess.READ_WRITE)
-		if f == null:
-			continue
-		f.big_endian = false
-		if _send(f, OP_HANDSHAKE, {"v": 1, "client_id": app_id}) and _receive(f):
-			return f
-		f.close()
+	var tried := []
+	for prefix in ["\\\\?\\pipe\\", "\\\\.\\pipe\\"]:
+		for i in 10:
+			var path: String = prefix + "discord-ipc-%d" % i
+			var f := FileAccess.open(path, FileAccess.READ_WRITE)
+			if f == null:
+				if i == 0:
+					tried.append("%s -> %s" % [path, error_string(FileAccess.get_open_error())])
+				continue
+			f.big_endian = false
+			if _send(f, OP_HANDSHAKE, {"v": 1, "client_id": app_id}) and _receive(f):
+				print("Discord Rich Presence: connected on ", path)
+				return f
+			print("Discord Rich Presence: %s opened but Discord didn't answer the handshake" % path)
+			f.close()
+	print("Discord Rich Presence: can't reach Discord (is the Discord app open?) ", tried)
 	return null
 
 
