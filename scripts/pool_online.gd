@@ -113,8 +113,10 @@ func sign_in_discord() -> void:
 	_verifier = _random_string(64)
 	var challenge := Marshalls.raw_to_base64(_verifier.sha256_buffer()).replace("+", "-").replace("/", "_").trim_suffix("=").trim_suffix("=")
 	var redirect := "http://127.0.0.1:%d%s" % [CALLBACK_PORT, CALLBACK_PATH]
-	var auth_url := "%s/auth/v1/authorize?provider=discord&redirect_to=%s&code_challenge=%s&code_challenge_method=s256" % [
-		url, redirect.uri_encode(), challenge]
+	# the key rides along in the link: a browser can't send it as a header,
+	# and Supabase turns away requests without it
+	var auth_url := "%s/auth/v1/authorize?provider=discord&redirect_to=%s&code_challenge=%s&code_challenge_method=s256&apikey=%s" % [
+		url, redirect.uri_encode(), challenge, api_key.uri_encode()]
 	signing_in = true
 	_sign_in_until = Time.get_ticks_msec() / 1000.0 + 180.0
 	auth_changed.emit()
