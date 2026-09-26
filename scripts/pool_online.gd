@@ -90,6 +90,9 @@ func _load_config() -> void:
 		var cfg := ConfigFile.new()
 		if cfg.load(path) == OK:
 			url = str(cfg.get_value("supabase", "url", "")).strip_edges().trim_suffix("/")
+			# just the project address: a copied "/rest/v1" on the end would send
+			# sign-in to the wrong place
+			url = url.trim_suffix("/rest/v1").trim_suffix("/")
 			api_key = str(cfg.get_value("supabase", "anon_key", "")).strip_edges()
 			if configured():
 				return
