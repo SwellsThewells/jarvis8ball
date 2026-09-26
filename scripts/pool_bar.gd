@@ -96,10 +96,7 @@ func order(k: String) -> void:
 		_barkeep_says("Finish that one first.", 2.0)
 		return
 	var d: Dictionary = DRINKS[k]
-	var cash := int(g.save_state.get("cash", 0))
-	if cash >= int(d.price):
-		g.save_state.cash = cash - int(d.price)
-		PoolCues.save_state(g.save_state)
+	if g.try_spend(int(d.price)):
 		g.sound.play("till", Vector3(BarRoom.BAR_FRONT_X - 0.38, TOP + 0.1, BarRoom.BAR_Z0 + 0.45), 0.5)
 		_barkeep_says(str(d.line), 2.6)
 	else:

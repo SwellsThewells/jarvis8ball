@@ -5,13 +5,16 @@ extends CanvasLayer
 # of big menu words on the left, and each page (play, shop, how to play,
 # settings) slides in on the same side so the table stays in view on the
 # right. Your profile sits in the top right corner: a sign-in button until
-# you're signed in through Steam, then your name, level and trophies, and it
+# you're signed in with Discord, then your name, level and trophies, and it
 # opens out into the full profile.
 
 signal start_pressed(difficulty: int)
 signal state_changed(state: Dictionary)
 signal quit_pressed()
 signal ui_sound(kind: String)
+signal online_start()
+signal buy_requested(id: String)
+signal code_entered(code: String)
 
 const CONTROLS := [
 	[["W", "A", "S", "D"], "Walk around the table"],
@@ -157,6 +160,9 @@ class Screen extends Control:
 	signal state_changed(state: Dictionary)
 	signal quit_pressed()
 	signal ui_sound(kind: String)
+	signal online_start()
+	signal buy_requested(id: String)
+	signal code_entered(code: String)
 
 	var state := {"owned": ["house"], "equipped": "house", "difficulty": 5, "guides": true}
 	var page := "main"            # main, mode, play, shop, info, settings, code, profile
@@ -181,6 +187,27 @@ class Screen extends Control:
 	var list_view: Control
 	var logo: Texture2D
 	var profile: PoolProfile
+	var online: PoolOnline
+
+	# online pages
+	var edits := {}               # name -> LineEdit, made the first time a page asks for one
+	var _edits_used := {}
+	var busy := false             # a request is out; buttons wait for it
+	var friends_open := false
+	var fr_tab := "friends"       # friends, requests, add
+	var fr_chat := ""             # whose conversation is open ("" for the list)
+	var fr_scroll := 0
+	var fr_results: Array = []
+	var fr_searched := false
+	var chat_scroll := 0
+	var browse: Array = []
+	var browse_t := 99.0
+	var browse_scroll := 0
+	var browse_loaded := false
+	var create_rules := {}
+	var create_public := true
+	var create_edit := false      # changing the lobby you're in, not making one
+	var my_ready := false
 
 	# settings page
 	const SETTING_ROWS := [
@@ -257,6 +284,18 @@ class Screen extends Control:
 		mp_nudge = maxf(0.0, mp_nudge - delta * 2.5)
 		if page == "profile" and (profile == null or not profile.signed_in):
 			go("main")
+		if online != null:
+			if page == "lobby" and online.lobby.is_empty():
+				go("mp")
+			if page in ["mp_create", "mp_browse"] and not online.signed_in():
+				go("mp")
+			if friends_open and not online.signed_in():
+				friends_open = false
+			if page == "mp_browse" and online.signed_in():
+				browse_t += delta
+				if browse_t > 6.0 and not busy:
+					browse_t = 0.0
+					_load_browse()
 		scroll = lerpf(scroll, scroll_to, 1.0 - exp(-14.0 * delta))
 		for k in anim.keys():
 			var target := 1.0 if k == hot else 0.0
@@ -299,6 +338,17 @@ class Screen extends Control:
 			_update_hot()
 		elif ev is InputEventMouseButton:
 			var mb := ev as InputEventMouseButton
+			if mb.pressed and mb.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
+				var step := -1 if mb.button_index == MOUSE_BUTTON_WHEEL_UP else 1
+				if friends_open:
+					if fr_chat != "":
+						chat_scroll = maxi(0, chat_scroll - step)
+					else:
+						fr_scroll = maxi(0, fr_scroll + step)
+					return
+				if page == "mp_browse":
+					browse_scroll = clampi(browse_scroll + step, 0, maxi(0, browse.size() - 1))
+					return
 			if page == "shop" and list_rect.has_point(mb.position) and mb.pressed:
 				if mb.button_index == MOUSE_BUTTON_WHEEL_UP:
 					_scroll_by(-ROW_H * 1.5)
@@ -352,11 +402,12 @@ class Screen extends Control:
 		elif name == "mode_bot":
 			go("play")
 		elif name == "mode_mp":
-			ui_sound.emit("click")
-			mp_nudge = 1.0
-			show_toast("Multiplayer is coming soon.")
+			go("mp")
+		elif _press_online(name):
+			pass
 		elif name == "chip":
 			if profile != null and profile.signed_in:
+				friends_open = false
 				go("profile")
 			elif profile != null:
 				ui_sound.emit("click")
@@ -396,8 +447,14 @@ class Screen extends Control:
 			match page:
 				"code":
 					go("settings")
-				"play":
+				"play", "mp":
 					go("mode")
+				"mp_create":
+					go("lobby" if create_edit else "mp")
+				"mp_browse":
+					go("mp")
+				"lobby":
+					_leave_lobby()
 				_:
 					go("main")
 		elif name == "jball":
@@ -437,32 +494,38 @@ class Screen extends Control:
 		if str(state.equipped) == str(cue.id):
 			return
 		if not owned.has(cue.id):
-			if int(cue.price) > 0:
-				return                      # nothing to pay with yet
-			owned.append(cue.id)
+			buy_requested.emit(str(cue.id))
+			return
 		state.equipped = cue.id
 		state_changed.emit(state)
 		ui_sound.emit("equip")
 
 	func _redeem() -> void:
-		var id := PoolCues.redeem(code_edit.text)
-		if id == "":
-			code_msg = "That code doesn't do anything." if code_edit.text.strip_edges() != "" else "Type a code first."
+		if code_edit.text.strip_edges() == "":
+			code_msg = "Type a code first."
 			code_shake = 1.0
 			ui_sound.emit("click")
 			code_edit.grab_focus.call_deferred()
 			return
-		var cue := PoolCues.by_id(id)
-		var owned: Array = state.owned
-		var fresh := not owned.has(id)
-		if fresh:
-			owned.append(id)
-		state.equipped = id
-		state_changed.emit(state)
+		if busy:
+			return
+		busy = true
+		code_entered.emit(code_edit.text)
+
+	# What the game made of the code: the cue it unlocked, or "".
+	func code_result(id: String, fresh: bool) -> void:
+		busy = false
+		if id == "":
+			code_msg = "That code doesn't do anything."
+			code_shake = 1.0
+			ui_sound.emit("click")
+			code_edit.grab_focus.call_deferred()
+			return
 		picked_cue = PoolCues.index_of(id)
 		_reveal_pick = true
 		go("shop")
 		ui_sound.emit("start" if fresh else "equip")
+		var cue := PoolCues.by_id(id)
 		show_toast(("Unlocked: %s" if fresh else "You've already got %s. It's in your hand.") % str(cue.name))
 
 	func _unhandled_key_input(ev: InputEvent) -> void:
@@ -470,11 +533,22 @@ class Screen extends Control:
 			return
 		match ev.keycode:
 			KEY_ESCAPE, KEY_BACKSPACE:
+				if friends_open:
+					if ev.keycode == KEY_ESCAPE:
+						if fr_chat != "":
+							_close_chat()
+						else:
+							friends_open = false
+					return
+				if page == "lobby":
+					return
 				if page == "code":
 					if ev.keycode == KEY_ESCAPE:
 						go("settings")
-				elif page == "play":
+				elif page in ["play", "mp"]:
 					go("mode")
+				elif page in ["mp_create", "mp_browse"]:
+					go("mp")
 				elif page != "main":
 					go("main")
 			KEY_ENTER, KEY_KP_ENTER:
@@ -569,6 +643,7 @@ class Screen extends Control:
 
 	func _draw() -> void:
 		hits.clear()
+		_edits_used.clear()
 		list_view.visible = page == "shop"
 		_draw_shade()
 		match page:
@@ -586,11 +661,26 @@ class Screen extends Control:
 				_draw_settings()
 			"code":
 				_draw_code()
+			"mp":
+				_draw_mp()
+			"mp_create":
+				_draw_mp_create()
+			"mp_browse":
+				_draw_mp_browse()
+			"lobby":
+				_draw_lobby()
 			"profile":
 				_draw_profile()
 		if page != "profile":
 			_draw_chip()
+		if friends_open:
+			_draw_friends()
 		_draw_toast()
+		for k in edits:
+			var le: LineEdit = edits[k]
+			if not _edits_used.has(k) and le.visible:
+				le.visible = false
+				le.release_focus()
 		# a hover can change as things animate in under a still mouse
 		_update_hot()
 
@@ -671,6 +761,7 @@ class Screen extends Control:
 		var cue: Dictionary = PoolCues.by_id(str(state.equipped))
 		_chip(Vector2(x, by), "OPPONENT", "Level %d  %s" % [int(state.difficulty), PoolAI.SKILL_LABELS[clampi(int(state.difficulty), 1, 10) - 1]])
 		_chip(Vector2(x + 300, by), "CUE", str(cue.name))
+		_chip(Vector2(x + 560, by), "COINS", _num(int(state.get("cash", 0))))
 
 	func _chip(at: Vector2, label: String, value: String) -> void:
 		_text(at, label, 13, PoolTheme.MUTED, 700, false, HORIZONTAL_ALIGNMENT_LEFT, -1, 3)
@@ -685,7 +776,7 @@ class Screen extends Control:
 		var cw := clampf((size.x - x * 2.0 - 24.0) * 0.5, 300.0, 400.0)
 		var cards := [
 			["mode_bot", "VS COMPUTER", "Eight-ball against the house player. Pick how good he is, from 1 to 10.", true],
-			["mode_mp", "MULTIPLAYER", "Take on your friends online, at the same table.", false],
+			["mode_mp", "MULTIPLAYER", "Take on your friends or anyone online. Winners take a trophy and 50 coins.", true],
 		]
 		for i in 2:
 			var d: Array = cards[i]
@@ -703,11 +794,10 @@ class Screen extends Control:
 			var alpha := 1.0 if live else 0.5
 			var art := Rect2(rr.position + Vector2(16, 16), Vector2(rr.size.x - 32, 200))
 			draw_style_box(PoolTheme.box(Color(1, 1, 1, 0.035 + (a * 0.02 if live else 0.0)), 12), art)
-			if live:
+			if nm == "mode_bot":
 				_icon_bot(art.get_center(), a)
 			else:
-				_icon_mp(art.get_center())
-				PoolTheme.badge(self, Vector2(art.end.x - 14, art.position.y + 14), "COMING SOON")
+				_icon_mp(art.get_center(), a)
 			var ty := art.end.y + 58.0
 			_text(Vector2(rr.position.x + 28, ty), str(d[1]), 34, Color(PoolTheme.WHITE, alpha), 800, true,
 				HORIZONTAL_ALIGNMENT_LEFT, -1, 1)
@@ -715,8 +805,8 @@ class Screen extends Control:
 				HORIZONTAL_ALIGNMENT_LEFT, rr.size.x - 56.0, 16, 3, Color(1, 1, 1, 0.66 * alpha))
 			var fy := rr.end.y - 32.0
 			if live:
-				_text(Vector2(rr.position.x + 28 + a * 4.0, fy), "CHOOSE OPPONENT  ›", 15, PoolTheme.GOLD.lerp(Color("ffd978"), a),
-					700, true, HORIZONTAL_ALIGNMENT_LEFT, -1, 2)
+				_text(Vector2(rr.position.x + 28 + a * 4.0, fy), "CHOOSE OPPONENT  ›" if nm == "mode_bot" else "FIND A GAME  ›", 15,
+					PoolTheme.GOLD.lerp(Color("ffd978"), a), 700, true, HORIZONTAL_ALIGNMENT_LEFT, -1, 2)
 			else:
 				_text(Vector2(rr.position.x + 28, fy), "ON ITS WAY", 15, PoolTheme.FAINT, 700, true, HORIZONTAL_ALIGNMENT_LEFT, -1, 2)
 
@@ -734,12 +824,12 @@ class Screen extends Control:
 		draw_line(tip, tip + d * 6.0, Color("2c4a6e"), 6.0, true)
 
 	# two people: you and a friend
-	func _icon_mp(c: Vector2) -> void:
-		var col := Color(1, 1, 1, 0.32)
+	func _icon_mp(c: Vector2, a := 0.0) -> void:
+		var col := Color(1, 1, 1, 0.5 + a * 0.2)
 		_person(c + Vector2(-34, 0), 44.0, col)
 		_person(c + Vector2(34, 0), 44.0, col)
 		draw_circle(c + Vector2(0, -4), 18.0, Color(0.08, 0.085, 0.09), true, -1.0, true)
-		_text(Vector2(c.x - 20, c.y + 3), "VS", 15, Color(1, 1, 1, 0.5), 800, true, HORIZONTAL_ALIGNMENT_CENTER, 40)
+		_text(Vector2(c.x - 20, c.y + 3), "VS", 15, PoolTheme.GOLD, 800, true, HORIZONTAL_ALIGNMENT_CENTER, 40)
 
 	# --- play against the house ------------------------------------------
 
@@ -829,7 +919,7 @@ class Screen extends Control:
 		var e := _ease(page_t)
 		_back_button(x, 70.0)
 		var shop := PoolCues.shop_indices(state.owned)
-		_page_title(x, 170.0, "SHOP", "%d CUES, ALL FREE" % shop.size())
+		_page_title(x, 170.0, "SHOP", "%s COINS TO SPEND" % _num(int(state.get("cash", 0))))
 
 		# the list: its frame here, its rows drawn clipped inside list_view
 		var lw := 420.0
@@ -882,8 +972,18 @@ class Screen extends Control:
 		draw_multiline_string(PoolTheme.font(400), Vector2(rx, iy + 66), str(pick.blurb), HORIZONTAL_ALIGNMENT_LEFT,
 			minf(rw - 320.0, 620.0), 18, 3, Color(1, 1, 1, 0.78))
 		var is_on := str(state.equipped) == str(pick.id)
-		var br := Rect2(Vector2(pr.end.x - 280, pr.end.y + 36), Vector2(280, 72))
-		_button(br, "equip", "EQUIPPED" if is_on else "EQUIP", not is_on, not is_on)
+		var have := (state.owned as Array).has(pick.id)
+		var price := int(pick.price)
+		var wallet := int(state.get("cash", 0))
+		var br := Rect2(Vector2(pr.end.x - 300, pr.end.y + 36), Vector2(300, 72))
+		if have or price == 0:
+			_button(br, "equip", "EQUIPPED" if is_on else ("EQUIP" if have else "TAKE IT"), not is_on, not is_on)
+		elif wallet >= price:
+			_button(br, "equip", "BUY  ·  %s" % _num(price), true, true)
+		else:
+			_button(br, "equip", "NEED %s MORE" % _num(price - wallet), false, false)
+		_coin(Vector2(br.position.x + 16, br.end.y + 26), 8.0)
+		_text(Vector2(br.position.x + 30, br.end.y + 31), "You have %s coins" % _num(wallet), 14, PoolTheme.MUTED, 500)
 
 	# a row of the cue list, in the list's own coordinates
 	func _row_rect(i: int) -> Rect2:
@@ -914,8 +1014,8 @@ class Screen extends Control:
 			c.draw_style_box(PoolTheme.box(cols[1], 4), Rect2(sw.position, Vector2(sw.size.x, sw.size.y * 0.5)))
 			c.draw_string(font_b, r.position + Vector2(36, 32), str(cue.name), HORIZONTAL_ALIGNMENT_LEFT, -1, 21, PoolTheme.WHITE)
 			c.draw_string(font_t, r.position + Vector2(36, 54), str(cue.tag).to_upper(), HORIZONTAL_ALIGNMENT_LEFT, -1, 12, PoolTheme.MUTED)
-			var badge := "EQUIPPED" if equipped else ("SECRET" if cue.get("secret", false) else ("OWNED" if owned.has(cue.id) else "FREE"))
-			var bcol := PoolTheme.FELT_HI if equipped else (PoolTheme.GOLD if cue.get("secret", false) else (PoolTheme.MUTED if owned.has(cue.id) else PoolTheme.GOLD))
+			var badge := "EQUIPPED" if equipped else ("OWNED" if owned.has(cue.id) else ("FREE" if int(cue.price) == 0 else "%s COINS" % _num(int(cue.price))))
+			var bcol := PoolTheme.FELT_HI if equipped else (PoolTheme.MUTED if owned.has(cue.id) else PoolTheme.GOLD)
 			PoolTheme.badge(c, Vector2(r.end.x - 14, r.position.y + (r.size.y - 22.0) * 0.5), badge, bcol)
 
 	# --- how to play ------------------------------------------------------
@@ -1089,12 +1189,36 @@ class Screen extends Control:
 		draw_style_box(PoolTheme.box(PoolTheme.PANEL.lerp(Color(0.1, 0.105, 0.11, 0.94), a), 14,
 			Color(1, 1, 1, 0.08 + a * 0.14), 1), r)
 		var p := r.position
+		# coins, and your friends, to the left of it
+		var fx := r.position.x - 12.0
+		if online != null and online.signed_in():
+			var fb := Rect2(Vector2(fx - h, r.position.y), Vector2(h, h))
+			fx = fb.position.x - 12.0
+			_hit(fb, "friends_btn")
+			var fa := maxf(_a("friends_btn"), 1.0 if friends_open else 0.0)
+			draw_style_box(PoolTheme.box(PoolTheme.PANEL.lerp(Color(0.1, 0.105, 0.11, 0.94), fa), 14,
+				Color(1, 1, 1, 0.08 + fa * 0.14), 1), fb)
+			var fc := fb.get_center()
+			_person(fc + Vector2(-7, -2), 9.0, Color(1, 1, 1, 0.55 + fa * 0.3))
+			_person(fc + Vector2(6, 0), 10.0, PoolTheme.WHITE)
+			var n := online.unread_total() + online.incoming_requests()
+			if n > 0:
+				var bc := fb.position + Vector2(fb.size.x - 10, 10)
+				draw_circle(bc, 10.0, PoolTheme.DANGER, true, -1.0, true)
+				_text(Vector2(bc.x - 10, bc.y + 5), str(mini(n, 9)), 12, PoolTheme.WHITE, 800, false, HORIZONTAL_ALIGNMENT_CENTER, 20)
+		var cash := _num(int(state.get("cash", 0)))
+		var cwid := _text_w(cash, 18, 800, true) + 56.0
+		var cr := Rect2(Vector2(fx - cwid, r.position.y + 12), Vector2(cwid, 40))
+		draw_style_box(PoolTheme.box(PoolTheme.PANEL, 20, PoolTheme.HAIR, 1), cr)
+		_coin(cr.position + Vector2(22, 20), 9.0)
+		_text(Vector2(cr.position.x + 38, cr.position.y + 27), cash, 18, PoolTheme.WHITE, 800, true)
 		if not profile.signed_in:
 			var ic := p + Vector2(34, h * 0.5)
-			draw_circle(ic, 20.0, Color("1b2838"), true, -1.0, true)
-			_person(ic, 11.0, PoolTheme.WHITE)
-			_text(p + Vector2(66, 29), "Sign in with Steam", 16, PoolTheme.WHITE.lerp(PoolTheme.GOLD, a), 700)
-			_text(p + Vector2(66, 48), "Save your level, stats and trophies", 12, PoolTheme.MUTED, 400)
+			_discord_icon(ic, 20.0)
+			var waiting := online != null and online.signing_in
+			_text(p + Vector2(66, 29), "Waiting for Discord..." if waiting else "Sign in with Discord", 16,
+				PoolTheme.WHITE.lerp(PoolTheme.GOLD, a), 700)
+			_text(p + Vector2(66, 48), "Click to cancel" if waiting else "Play online, keep your stats", 12, PoolTheme.MUTED, 400)
 			_text(Vector2(r.end.x - 34, p.y + h * 0.5 + 7), "›", 22, PoolTheme.MUTED.lerp(PoolTheme.WHITE, a), 700, false,
 				HORIZONTAL_ALIGNMENT_CENTER, 20)
 			return
@@ -1189,7 +1313,7 @@ class Screen extends Control:
 		_avatar(Rect2(Vector2(px, y), Vector2(96, 96)), 16)
 		var nx := px + 120.0
 		_text(Vector2(nx, y + 40), _fit(profile.username, 38, 800, inner - 120.0 - 70.0), 38, PoolTheme.WHITE, 800, true)
-		var via := "TEST PROFILE  ·  NO STEAM IN THIS BUILD" if profile.test_profile else "SIGNED IN THROUGH STEAM"
+		var via := "SIGNED IN WITH DISCORD"
 		PoolTheme.caps(self, Vector2(nx + 2, y + 64), via, PoolTheme.GOLD, 11)
 		var so := Rect2(Vector2(nx, y + 76), Vector2(100, 28))
 		_hit(so, "signout")
@@ -1219,7 +1343,7 @@ class Screen extends Control:
 		_text(Vector2(px + 84, y + 48), _num(int(st.trophies)), 34, PoolTheme.WHITE, 800, true)
 		PoolTheme.caps(self, Vector2(px + 86, y + 68), "TROPHIES", PoolTheme.GOLD, 11)
 		draw_multiline_string(PoolTheme.font(400), Vector2(px + 240, y + 38),
-			"One for every online match you win. Multiplayer is on its way.", HORIZONTAL_ALIGNMENT_LEFT,
+			"One for every online match you win, with 50 coins on top.", HORIZONTAL_ALIGNMENT_LEFT,
 			inner - 262.0, 14, 2, Color(1, 1, 1, 0.66))
 		y += 112.0
 
@@ -1235,6 +1359,7 @@ class Screen extends Control:
 			["WIN STREAK", _num(int(st.streak))],
 			["BEST STREAK", _num(int(st.best_streak))],
 			["TOUGHEST BEATEN", "Level %d" % int(st.best_bot_beaten) if int(st.best_bot_beaten) > 0 else "—"],
+			["COINS", _num(int(state.get("cash", 0)))],
 			["SHOTS TAKEN", _num(int(st.shots))],
 			["BALLS HIT", _num(int(st.balls_hit))],
 			["BALLS POTTED", _num(int(st.balls_potted))],
@@ -1242,7 +1367,6 @@ class Screen extends Control:
 			["TIME PLAYED", _duration(int(st.time_played))],
 			["DRINKS ORDERED", _num(int(st.drinks))],
 			["PUNCHES LANDED", _num(int(st.punches_landed))],
-			["TIMES DECKED", _num(int(st.knockdowns))],
 		]
 		var cols := 3
 		var gap := 10.0
@@ -1253,6 +1377,799 @@ class Screen extends Control:
 			draw_style_box(PoolTheme.box(PoolTheme.RAISED, 10, PoolTheme.HAIR, 1), c)
 			_text(c.position + Vector2(16, ch * 0.5 + 4), str(cards[i][1]), 22, PoolTheme.WHITE, 800, true)
 			PoolTheme.caps(self, c.position + Vector2(17, ch * 0.5 + 22), str(cards[i][0]), PoolTheme.FAINT, 10)
+
+	# --- online: shared bits ------------------------------------------------
+
+	# A text box at `r`, made the first time it's asked for and shown only on
+	# the frames something draws it. `submit` runs on Enter.
+	func _edit(key: String, r: Rect2, placeholder: String, max_len := 40, submit := Callable()) -> LineEdit:
+		var le := _get_edit(key, placeholder, max_len, submit)
+		var edge := PoolTheme.GOLD if le.has_focus() else Color(1, 1, 1, 0.16)
+		draw_style_box(PoolTheme.box(Color(0, 0, 0, 0.35), 10, edge, 1), r)
+		le.position = r.position + Vector2(12, 2)
+		le.size = r.size - Vector2(24, 4)
+		le.visible = true
+		_edits_used[key] = true
+		return le
+
+	func _get_edit(key: String, placeholder := "", max_len := 40, submit := Callable()) -> LineEdit:
+		var le: LineEdit = edits.get(key)
+		if le == null:
+			le = LineEdit.new()
+			le.placeholder_text = placeholder
+			le.max_length = max_len
+			le.context_menu_enabled = false
+			le.add_theme_font_override("font", PoolTheme.font(500))
+			le.add_theme_font_size_override("font_size", 16)
+			le.add_theme_color_override("font_color", PoolTheme.WHITE)
+			le.add_theme_color_override("font_placeholder_color", Color(1, 1, 1, 0.3))
+			le.add_theme_color_override("caret_color", PoolTheme.GOLD)
+			for st in ["normal", "focus", "read_only"]:
+				le.add_theme_stylebox_override(st, StyleBoxEmpty.new())
+			if submit.is_valid():
+				le.text_submitted.connect(func(_t: String): submit.call())
+			le.visible = false
+			add_child(le)
+			edits[key] = le
+		return le
+
+	func _edit_text(key: String) -> String:
+		return (edits[key] as LineEdit).text.strip_edges() if edits.has(key) else ""
+
+	func _coin(c: Vector2, r: float) -> void:
+		draw_circle(c, r, PoolTheme.GOLD, true, -1.0, true)
+		draw_circle(c, r * 0.64, Color(0.8, 0.6, 0.2), true, -1.0, true)
+
+	# Anyone's picture: their Discord avatar once it's loaded, their initial till then.
+	func _player_pic(r: Rect2, pl: Dictionary, round := true) -> void:
+		var tex: Texture2D = online.avatar(str(pl.get("avatar_url", ""))) if online != null else null
+		var radius := int(r.size.y * 0.5) if round else 10
+		if tex != null:
+			if not round:
+				draw_texture_rect(tex, r, false)
+				return
+			# the picture cut to a circle: a round polygon that samples it
+			var pts := PackedVector2Array()
+			var uvs := PackedVector2Array()
+			for i in 40:
+				var t := TAU * float(i) / 40.0
+				var u := Vector2(cos(t), sin(t))
+				pts.append(r.get_center() + u * r.size.y * 0.5)
+				uvs.append(Vector2(0.5, 0.5) + u * 0.5)
+			draw_colored_polygon(pts, Color.WHITE, uvs, tex)
+			return
+		draw_style_box(PoolTheme.box(PoolTheme.FELT, radius), r)
+		var nm := str(pl.get("display_name", pl.get("username", "?")))
+		var fs := int(r.size.y * 0.5)
+		_text(Vector2(r.position.x, r.position.y + r.size.y * 0.5 + fs * 0.36), nm.left(1).to_upper(), fs, PoolTheme.WHITE, 800,
+			true, HORIZONTAL_ALIGNMENT_CENTER, r.size.x)
+
+	static func _status_word(st: String) -> String:
+		match st:
+			"menu":
+				return "Online"
+			"lobby":
+				return "In a lobby"
+			"playing":
+				return "Playing"
+		return "Offline"
+
+	static func _status_col(st: String) -> Color:
+		match st:
+			"menu":
+				return PoolTheme.FELT_HI
+			"lobby":
+				return PoolTheme.GOLD
+			"playing":
+				return PoolTheme.CHALK
+		return Color(1, 1, 1, 0.25)
+
+	# The Discord mark, simplified: a rounded controller face with two eyes.
+	func _discord_icon(c: Vector2, r: float, col := Color.WHITE) -> void:
+		draw_circle(c, r, Color("5865f2"), true, -1.0, true)
+		var w := r * 1.1
+		var body := Rect2(c - Vector2(w * 0.5, w * 0.34), Vector2(w, w * 0.7))
+		draw_style_box(PoolTheme.box(col, int(w * 0.3)), body)
+		draw_circle(c + Vector2(-w * 0.2, -w * 0.02), w * 0.1, Color("5865f2"), true, -1.0, true)
+		draw_circle(c + Vector2(w * 0.2, -w * 0.02), w * 0.1, Color("5865f2"), true, -1.0, true)
+
+	func _press_online(name: String) -> bool:
+		if online == null:
+			return false
+		if name == "discord_sign_in":
+			ui_sound.emit("click")
+			profile.sign_in()
+		elif name == "mp_create":
+			create_edit = false
+			create_rules = PoolMPRules.defaults()
+			create_public = true
+			_get_edit("lobby_name", "Name your table").text = "%s's table" % online.display_name()
+			go("mp_create")
+		elif name == "mp_browse":
+			browse_loaded = false
+			browse_t = 99.0
+			go("mp_browse")
+		elif name == "join_code":
+			_join_code()
+		elif name == "to_lobby":
+			go("lobby")
+		elif name == "vis_public" or name == "vis_private":
+			create_public = name == "vis_public"
+			ui_sound.emit("click")
+		elif name.begins_with("preset:"):
+			create_rules = PoolMPRules.preset(int(name.substr(7)))
+			ui_sound.emit("click")
+		elif name.begins_with("rule-:") or name.begins_with("rule+:"):
+			create_rules = PoolMPRules.cycle(create_rules, name.substr(6), -1 if name.begins_with("rule-") else 1)
+			ui_sound.emit("click")
+		elif name == "create_go":
+			_create_or_save()
+		elif name == "browse_refresh":
+			browse_t = 99.0
+			ui_sound.emit("click")
+		elif name.begins_with("join:"):
+			_join(name.substr(5))
+		elif name == "lobby_start":
+			if online.is_host() and online.other_here() and online.other_ready():
+				ui_sound.emit("start")
+				online_start.emit()
+		elif name == "lobby_ready":
+			my_ready = not my_ready
+			online.set_ready(my_ready)
+			ui_sound.emit("click")
+		elif name == "lobby_edit":
+			create_edit = true
+			create_rules = PoolMPRules.clean(online.lobby.get("rules", {}))
+			create_public = bool(online.lobby.get("is_public", true))
+			_get_edit("lobby_name", "Name your table").text = str(online.lobby.get("name", ""))
+			go("mp_create")
+		elif name == "lobby_invite":
+			friends_open = true
+			fr_tab = "friends"
+			_close_chat()
+			ui_sound.emit("click")
+		elif name == "lobby_leave":
+			_leave_lobby()
+		elif name == "copy_code":
+			DisplayServer.clipboard_set(str(online.lobby.get("code", "")))
+			show_toast("Code copied. Send it to whoever you want to play.")
+			ui_sound.emit("click")
+		elif name == "friends_btn":
+			friends_open = not friends_open
+			ui_sound.emit("click")
+		elif name == "fr_bg" or name == "fr_close":
+			friends_open = false
+			_close_chat()
+		elif name == "fr_panel":
+			pass
+		elif name.begins_with("fr_tab:"):
+			fr_tab = name.substr(7)
+			fr_scroll = 0
+			ui_sound.emit("click")
+		elif name.begins_with("fr_open:"):
+			_open_chat(name.substr(8))
+		elif name == "fr_back":
+			_close_chat()
+		elif name == "fr_send":
+			_send_chat()
+		elif name.begins_with("fr_invite:"):
+			_invite(name.substr(10))
+		elif name.begins_with("fr_accept:"):
+			online.answer_request(name.substr(10), true)
+			ui_sound.emit("equip")
+		elif name.begins_with("fr_decline:"):
+			online.answer_request(name.substr(11), false)
+			ui_sound.emit("click")
+		elif name.begins_with("fr_cancel:") or name.begins_with("fr_remove:"):
+			online.remove_friend(name.substr(10))
+			if fr_chat == name.substr(10):
+				_close_chat()
+			ui_sound.emit("click")
+		elif name.begins_with("fr_add:"):
+			_add_friend(name.substr(7))
+		elif name == "fr_search":
+			_search()
+		elif name.begins_with("fr_join:"):
+			_join(name.substr(8))
+		else:
+			return false
+		return true
+
+	func _join_code() -> void:
+		var code := _edit_text("join_code")
+		if code.length() < 4 or busy:
+			show_toast("Type the 6-letter code from whoever made the lobby.")
+			return
+		busy = true
+		var err := await online.join_code(code)
+		busy = false
+		if err != "":
+			show_toast(err)
+			ui_sound.emit("click")
+			return
+		_joined()
+
+	func _join(id: String) -> void:
+		if busy:
+			return
+		busy = true
+		var err := await online.join_lobby(id)
+		busy = false
+		if err != "":
+			show_toast(err)
+			ui_sound.emit("click")
+			browse_t = 99.0
+			return
+		_joined()
+
+	func _joined() -> void:
+		friends_open = false
+		_close_chat()
+		my_ready = false
+		online.lobby_send("joined", {})
+		ui_sound.emit("equip")
+		go("lobby")
+
+	func _create_or_save() -> void:
+		if busy:
+			return
+		busy = true
+		var nm := _edit_text("lobby_name")
+		var err := ""
+		if create_edit:
+			err = await online.update_lobby(nm, create_public, create_rules)
+		else:
+			err = await online.create_lobby(nm, create_public, create_rules)
+		busy = false
+		if err != "":
+			show_toast(err)
+			return
+		my_ready = false
+		ui_sound.emit("equip")
+		go("lobby")
+
+	func _leave_lobby() -> void:
+		my_ready = false
+		online.leave_lobby()
+		ui_sound.emit("click")
+		go("mp")
+
+	func _load_browse() -> void:
+		busy = true
+		browse = await online.public_lobbies()
+		busy = false
+		browse_loaded = true
+		browse_scroll = clampi(browse_scroll, 0, maxi(0, browse.size() - 1))
+
+	func _open_chat(id: String) -> void:
+		fr_chat = id
+		chat_scroll = 0
+		online.open_chat = id
+		ui_sound.emit("click")
+		await online.load_conversation(id)
+
+	func _close_chat() -> void:
+		fr_chat = ""
+		if online != null:
+			online.open_chat = ""
+
+	func _send_chat() -> void:
+		var body := _edit_text("chat")
+		if body == "" or fr_chat == "":
+			return
+		(edits["chat"] as LineEdit).text = ""
+		chat_scroll = 0
+		var err := await online.send_message(fr_chat, body)
+		if err != "":
+			show_toast(err)
+
+	func _invite(id: String) -> void:
+		var err := await online.invite(id)
+		if err != "":
+			show_toast(err)
+		else:
+			show_toast("Invite sent.")
+			ui_sound.emit("equip")
+
+	func _add_friend(id: String) -> void:
+		var r := await online.add_friend(id)
+		show_toast("You're friends now." if r == "friends" else ("Friend request sent." if r == "sent" else r))
+		ui_sound.emit("equip")
+
+	func _search() -> void:
+		var q := _edit_text("fr_search")
+		if q.length() < 2:
+			show_toast("Type at least two letters of their Discord name.")
+			return
+		fr_results = await online.find_players(q)
+		fr_searched = true
+
+	# --- online: the hub --------------------------------------------------------
+
+	func _draw_mp() -> void:
+		var x := 84.0
+		var e := _ease(page_t)
+		_back_button(x, 70.0)
+		_page_title(x, 170.0, "MULTIPLAYER", "PLAY PEOPLE ONLINE")
+		if online == null or not online.configured():
+			var pr := Rect2(Vector2(x + (1.0 - e) * -40.0, 236), Vector2(560, 190))
+			PoolTheme.panel(self, pr)
+			_text(pr.position + Vector2(32, 64), "Online play isn't set up yet", 26, PoolTheme.WHITE, 800, true)
+			draw_multiline_string(PoolTheme.font(400), pr.position + Vector2(32, 100),
+				"This build hasn't been pointed at an online server. Whoever made it can follow ONLINE_SETUP.md to switch it on.",
+				HORIZONTAL_ALIGNMENT_LEFT, pr.size.x - 64.0, 16, 3, Color(1, 1, 1, 0.7))
+			return
+		if not online.signed_in():
+			var pr := Rect2(Vector2(x + (1.0 - e) * -40.0, 236), Vector2(560, 300))
+			PoolTheme.panel(self, pr)
+			_discord_icon(pr.position + Vector2(64, 76), 32.0)
+			_text(pr.position + Vector2(112, 70), "Sign in to play online", 28, PoolTheme.WHITE, 800, true)
+			_text(pr.position + Vector2(112, 96), "With your Discord account", 15, PoolTheme.MUTED, 500)
+			draw_multiline_string(PoolTheme.font(400), pr.position + Vector2(32, 150),
+				"Make lobbies, join other people's, add friends and chat. Every win online is a trophy and 50 coins.",
+				HORIZONTAL_ALIGNMENT_LEFT, pr.size.x - 64.0, 16, 3, Color(1, 1, 1, 0.7))
+			var br := Rect2(pr.position + Vector2(32, pr.size.y - 32 - 56), Vector2(pr.size.x - 64, 56))
+			if online.signing_in:
+				_button(br, "discord_sign_in", "Waiting for Discord...  (click to cancel)", false)
+			else:
+				_button(br, "discord_sign_in", "Sign in with Discord")
+			return
+		var y := 236.0
+		if not online.lobby.is_empty():
+			var bn := Rect2(Vector2(x + (1.0 - e) * -40.0, y), Vector2(824, 72))
+			_hit(bn, "to_lobby")
+			var a := _a("to_lobby")
+			draw_style_box(PoolTheme.box(Color(PoolTheme.GOLD, 0.08 + a * 0.06), 14, Color(PoolTheme.GOLD, 0.5), 1), bn)
+			PoolTheme.caps(self, bn.position + Vector2(24, 30), "YOU'RE IN A LOBBY", PoolTheme.GOLD, 11)
+			_text(bn.position + Vector2(24, 54), str(online.lobby.get("name", "")), 18, PoolTheme.WHITE, 700)
+			_text(Vector2(bn.end.x - 24 - 200, bn.position.y + 44), "BACK TO IT  ›", 15, PoolTheme.GOLD.lerp(Color("ffd978"), a),
+				700, true, HORIZONTAL_ALIGNMENT_RIGHT, 200, 2)
+			y += 96.0
+		var cw := 400.0
+		var cards := [
+			["mp_create", "CREATE LOBBY", "Your table, your rules. Keep it public or make it private and invite your friends."],
+			["mp_browse", "BROWSE LOBBIES", "Find an open table and jump in. Anyone can join a public lobby."],
+		]
+		for i in 2:
+			var d: Array = cards[i]
+			var nm: String = d[0]
+			var ei := _ease(page_t * 1.4 - float(i) * 0.15)
+			var a := _a(nm)
+			var r := Rect2(Vector2(x + float(i) * (cw + 24.0) + (1.0 - ei) * -40.0, y - a * 4.0), Vector2(cw, 250))
+			_hit(r, nm)
+			PoolTheme.panel(self, r)
+			if a > 0.01:
+				draw_style_box(PoolTheme.box(Color(0, 0, 0, 0), 16, Color(PoolTheme.GOLD, 0.7 * a), 1), r)
+			var ic := r.position + Vector2(56, 64)
+			draw_circle(ic, 30.0, Color(1, 1, 1, 0.05), true, -1.0, true)
+			if i == 0:
+				draw_line(ic - Vector2(12, 0), ic + Vector2(12, 0), PoolTheme.GOLD, 3.0, true)
+				draw_line(ic - Vector2(0, 12), ic + Vector2(0, 12), PoolTheme.GOLD, 3.0, true)
+			else:
+				for k in 3:
+					draw_line(ic + Vector2(-12, -8 + k * 8), ic + Vector2(12, -8 + k * 8), PoolTheme.GOLD, 3.0, true)
+			_text(r.position + Vector2(28, 140), str(d[1]), 30, PoolTheme.WHITE, 800, true, HORIZONTAL_ALIGNMENT_LEFT, -1, 1)
+			draw_multiline_string(PoolTheme.font(400), r.position + Vector2(28, 170), str(d[2]), HORIZONTAL_ALIGNMENT_LEFT,
+				r.size.x - 56.0, 15, 3, Color(1, 1, 1, 0.66))
+		# a private lobby's code
+		y += 278.0
+		var jr := Rect2(Vector2(x + (1.0 - e) * -40.0, y), Vector2(824, 88))
+		PoolTheme.panel(self, jr)
+		PoolTheme.caps(self, jr.position + Vector2(28, 36), "GOT A CODE?", PoolTheme.GOLD, 11)
+		_text(jr.position + Vector2(28, 60), "Join a private lobby", 15, PoolTheme.MUTED, 500)
+		_edit("join_code", Rect2(jr.position + Vector2(300, 20), Vector2(320, 48)), "ABC123", 6, _join_code)
+		_button(Rect2(jr.position + Vector2(636, 20), Vector2(160, 48)), "join_code", "Join", true, not busy)
+
+	# --- online: making a lobby ----------------------------------------------
+
+	func _draw_mp_create() -> void:
+		var x := 84.0
+		var e := _ease(page_t)
+		_back_button(x, 70.0)
+		_page_title(x, 170.0, "EDIT TABLE" if create_edit else "CREATE LOBBY", "YOUR TABLE, YOUR RULES")
+		var w := minf(size.x - 2.0 * x, 1120.0)
+		var panel := Rect2(Vector2(x + (1.0 - e) * -40.0, 236), Vector2(w, 36.0 + 38.0 + 7.0 * 62.0 + 36.0))
+		PoolTheme.panel(self, panel)
+		var gutter := 56.0
+		var lw := 380.0
+		var lx := panel.position.x + 36.0
+		var rx := lx + lw + gutter
+		var rw := panel.end.x - 36.0 - rx
+		var y := panel.position.y + 50.0
+		# name
+		PoolTheme.caps(self, Vector2(lx, y), "NAME", PoolTheme.GOLD)
+		_edit("lobby_name", Rect2(Vector2(lx, y + 14), Vector2(lw, 48)), "Name your table", 40)
+		y += 96.0
+		# who can join
+		PoolTheme.caps(self, Vector2(lx, y), "WHO CAN JOIN", PoolTheme.GOLD)
+		for k in 2:
+			var nm := "vis_public" if k == 0 else "vis_private"
+			var on := create_public == (k == 0)
+			var r := Rect2(Vector2(lx + float(k) * (lw * 0.5 + 4.0), y + 14), Vector2(lw * 0.5 - 4.0, 48))
+			_hit(r, nm)
+			var a := _a(nm)
+			draw_style_box(PoolTheme.box(Color(PoolTheme.GOLD, 0.14) if on else Color(1, 1, 1, 0.04 + a * 0.05), 10,
+				Color(PoolTheme.GOLD, 0.8) if on else PoolTheme.HAIR, 1), r)
+			_text(Vector2(r.position.x, r.position.y + 30), "Public" if k == 0 else "Private", 16,
+				PoolTheme.WHITE if on else PoolTheme.MUTED, 700, false, HORIZONTAL_ALIGNMENT_CENTER, r.size.x)
+		_text(Vector2(lx, y + 88), "Anyone can find it in Browse." if create_public else "Only people with the code, or your invite.",
+			13, PoolTheme.MUTED, 400)
+		y += 128.0
+		# presets
+		PoolTheme.caps(self, Vector2(lx, y), "QUICK RULES", PoolTheme.GOLD)
+		var cur := PoolMPRules.preset_of(create_rules)
+		var pw := (lw - 12.0) / 2.0
+		for i in PoolMPRules.PRESETS.size():
+			var nm := "preset:%d" % i
+			var r := Rect2(Vector2(lx + float(i % 2) * (pw + 12.0), y + 14 + float(i / 2) * 56.0), Vector2(pw, 46))
+			_hit(r, nm)
+			var a := _a(nm)
+			var on := cur == i
+			draw_style_box(PoolTheme.box(Color(PoolTheme.GOLD, 0.14) if on else Color(1, 1, 1, 0.04 + a * 0.05), 10,
+				Color(PoolTheme.GOLD, 0.8) if on else PoolTheme.HAIR, 1), r)
+			_text(Vector2(r.position.x, r.position.y + 29), str(PoolMPRules.PRESETS[i].name), 15,
+				PoolTheme.WHITE if on else PoolTheme.MUTED, 700, false, HORIZONTAL_ALIGNMENT_CENTER, r.size.x)
+		# the rules, one per row
+		var ry := panel.position.y + 36.0
+		PoolTheme.caps(self, Vector2(rx, ry + 14), "RULES", PoolTheme.GOLD)
+		ry += 38.0
+		for i in PoolMPRules.LIST.size():
+			var spec: Dictionary = PoolMPRules.LIST[i]
+			var key: String = spec.key
+			var r := Rect2(Vector2(rx, ry), Vector2(rw, 62))
+			if i < PoolMPRules.LIST.size() - 1:
+				PoolTheme.divider(self, r.position.x, r.end.x, r.end.y)
+			_text(r.position + Vector2(0, 27), str(spec.label), 17, PoolTheme.WHITE, 600)
+			_text(r.position + Vector2(0, 47), str(spec.desc), 13, PoolTheme.MUTED, 400)
+			var box := Rect2(Vector2(r.end.x - 196, r.position.y + 13), Vector2(196, 36))
+			draw_style_box(PoolTheme.box(PoolTheme.RAISED, 18, PoolTheme.HAIR, 1), box)
+			for k in 2:
+				var nm := ("rule-:" if k == 0 else "rule+:") + key
+				var br := Rect2(Vector2(box.position.x if k == 0 else box.end.x - 40, box.position.y), Vector2(40, 36))
+				_hit(br, nm)
+				var a := _a(nm)
+				if a > 0.01:
+					draw_circle(br.get_center(), 14.0, Color(1, 1, 1, 0.08 * a), true, -1.0, true)
+				_chevron(br.get_center(), -1.0 if k == 0 else 1.0, PoolTheme.MUTED.lerp(PoolTheme.WHITE, a))
+			_text(Vector2(box.position.x + 40, box.position.y + 24), PoolMPRules.name_of(create_rules, key).to_upper(), 14,
+				PoolTheme.WHITE, 700, true, HORIZONTAL_ALIGNMENT_CENTER, box.size.x - 80, 1)
+			ry += 62.0
+		_button(Rect2(Vector2(lx, panel.end.y - 36 - 56), Vector2(lw, 56)), "create_go",
+			"Save changes" if create_edit else "Create lobby", true, not busy)
+
+	# --- online: finding a lobby ---------------------------------------------
+
+	func _draw_mp_browse() -> void:
+		var x := 84.0
+		var e := _ease(page_t)
+		_back_button(x, 70.0)
+		_page_title(x, 170.0, "PUBLIC LOBBIES", ("%d OPEN TABLES" % browse.size()) if browse_loaded else "LOOKING...")
+		var w := minf(size.x - 2.0 * x, 1000.0)
+		var panel := Rect2(Vector2(x + (1.0 - e) * -40.0, 236), Vector2(w, size.y - 236 - 60))
+		PoolTheme.panel(self, panel)
+		var px := panel.position.x + 28.0
+		var inner := panel.size.x - 56.0
+		var rb := Rect2(Vector2(panel.end.x - 28 - 130, panel.position.y + 24), Vector2(130, 40))
+		_button(rb, "browse_refresh", "Refresh", false)
+		PoolTheme.caps(self, Vector2(px, panel.position.y + 50), "OPEN TABLES", PoolTheme.GOLD)
+		var y := panel.position.y + 84.0
+		if browse_loaded and browse.is_empty():
+			_text(Vector2(px, y + 60), "Nobody's waiting at a table right now.", 20, PoolTheme.WHITE, 700, false,
+				HORIZONTAL_ALIGNMENT_CENTER, inner)
+			_text(Vector2(px, y + 90), "Make one and your friends can join, or check back in a moment.", 15, PoolTheme.MUTED,
+				400, false, HORIZONTAL_ALIGNMENT_CENTER, inner)
+			var cr := Rect2(Vector2(px + inner * 0.5 - 130, y + 124), Vector2(260, 52))
+			_button(cr, "mp_create", "Create lobby")
+			return
+		var row_h := 88.0
+		var fit := int((panel.end.y - 24.0 - y) / row_h)
+		for i in range(browse_scroll, mini(browse.size(), browse_scroll + fit)):
+			var l: Dictionary = browse[i]
+			var r := Rect2(Vector2(px, y), Vector2(inner, row_h - 10))
+			var host: Dictionary = l.get("host_player", {}) if typeof(l.get("host_player")) == TYPE_DICTIONARY else {}
+			var nm := "join:" + str(l.id)
+			var a := _a("row:" + str(l.id))
+			_hit(r, "row:" + str(l.id))
+			draw_style_box(PoolTheme.box(Color(1, 1, 1, 0.03 + a * 0.04), 12, PoolTheme.HAIR, 1), r)
+			_player_pic(Rect2(r.position + Vector2(16, 15), Vector2(48, 48)), host)
+			_text(r.position + Vector2(80, 32), _fit(str(l.get("name", "")), 18, 700, inner - 300.0), 18, PoolTheme.WHITE, 700)
+			_text(r.position + Vector2(80, 52), "%s  ·  %d trophies" % [str(host.get("display_name", "?")), int(host.get("trophies", 0))],
+				13, PoolTheme.MUTED, 500)
+			_text(r.position + Vector2(80, 70), PoolMPRules.summary(l.get("rules", {})), 12, PoolTheme.FAINT, 500)
+			_button(Rect2(Vector2(r.end.x - 16 - 120, r.position.y + 19), Vector2(120, 40)), nm, "Join", true, not busy)
+			y += row_h
+		if browse.size() > fit:
+			_text(Vector2(px, panel.end.y - 16), "Scroll for more", 12, PoolTheme.FAINT, 500, false, HORIZONTAL_ALIGNMENT_CENTER, inner)
+
+	# --- online: the lobby ------------------------------------------------------
+
+	func _draw_lobby() -> void:
+		if online == null or online.lobby.is_empty():
+			return
+		var l: Dictionary = online.lobby
+		var x := 84.0
+		var e := _ease(page_t)
+		_back_button(x, 70.0)
+		_page_title(x, 170.0, _fit(str(l.get("name", "Lobby")).to_upper(), 60, 800, size.x - 700.0),
+			("PUBLIC LOBBY" if bool(l.get("is_public", true)) else "PRIVATE LOBBY"))
+		var host: Dictionary = l.get("host_player", {}) if typeof(l.get("host_player")) == TYPE_DICTIONARY else {}
+		var guest: Dictionary = l.get("guest_player", {}) if typeof(l.get("guest_player")) == TYPE_DICTIONARY else {}
+		var i_host := online.is_host()
+		var y := 236.0
+		var cw := 300.0
+		for k in 2:
+			var pl: Dictionary = host if k == 0 else guest
+			var r := Rect2(Vector2(x + float(k) * (cw + 24.0) + (1.0 - e) * -40.0, y), Vector2(cw, 250))
+			if pl.is_empty():
+				draw_style_box(PoolTheme.box(Color(1, 1, 1, 0.02), 16, Color(1, 1, 1, 0.14), 1), r)
+				var cc := r.get_center() - Vector2(0, 40)
+				draw_arc(cc, 34.0, 0.0, TAU, 48, Color(1, 1, 1, 0.2), 2.0, true)
+				_text(Vector2(r.position.x, cc.y + 8), "?", 30, Color(1, 1, 1, 0.3), 800, true, HORIZONTAL_ALIGNMENT_CENTER, r.size.x)
+				_text(Vector2(r.position.x, r.position.y + 170), "Waiting for a player", 18, PoolTheme.MUTED, 700, false,
+					HORIZONTAL_ALIGNMENT_CENTER, r.size.x)
+				if i_host:
+					_button(Rect2(Vector2(r.position.x + 40, r.end.y - 30 - 44), Vector2(r.size.x - 80, 44)), "lobby_invite",
+						"Invite a friend", false)
+				continue
+			PoolTheme.panel(self, r)
+			var pid := str(pl.get("id", ""))
+			var here := pid == online.user_id or online.lobby_members.has(pid)
+			_player_pic(Rect2(Vector2(r.get_center().x - 44, r.position.y + 28), Vector2(88, 88)), pl)
+			_text(Vector2(r.position.x, r.position.y + 150), _fit(str(pl.get("display_name", "?")), 22, 800, r.size.x - 32.0), 22,
+				PoolTheme.WHITE, 800, true, HORIZONTAL_ALIGNMENT_CENTER, r.size.x)
+			_trophy(Vector2(r.get_center().x - 28, r.position.y + 173), 16.0, PoolTheme.GOLD)
+			_text(Vector2(r.get_center().x - 16, r.position.y + 180), "%d" % int(pl.get("trophies", 0)), 14, PoolTheme.MUTED, 700)
+			var tag := "HOST" if k == 0 else "PLAYER"
+			var ready := false
+			if k == 1:
+				ready = my_ready if pid == online.user_id else online.other_ready()
+			var st := tag
+			var scol := PoolTheme.FAINT
+			if not here:
+				st = "CONNECTING..."
+			elif k == 1:
+				st = "READY" if ready else "NOT READY"
+				scol = PoolTheme.FELT_HI if ready else PoolTheme.FAINT
+			PoolTheme.badge(self, Vector2(r.get_center().x + PoolTheme.font(800, false, 2).get_string_size(st, HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x * 0.5 + 9.0,
+				r.end.y - 50), st, scol if k == 1 else PoolTheme.GOLD)
+		# the code and the rules
+		var rx := x + 2.0 * (cw + 24.0) + (1.0 - e) * -40.0
+		var rw := minf(420.0, size.x - rx - 60.0)
+		var cr := Rect2(Vector2(rx, y), Vector2(rw, 82))
+		_hit(cr, "copy_code")
+		var ca := _a("copy_code")
+		draw_style_box(PoolTheme.box(Color(1, 1, 1, 0.04 + ca * 0.04), 14, PoolTheme.HAIR, 1), cr)
+		PoolTheme.caps(self, cr.position + Vector2(22, 32), "LOBBY CODE", PoolTheme.FAINT, 11)
+		_text(cr.position + Vector2(22, 66), str(l.get("code", "")), 30, PoolTheme.WHITE, 800, true, HORIZONTAL_ALIGNMENT_LEFT, -1, 6)
+		_text(Vector2(cr.end.x - 22 - 100, cr.position.y + 52), "COPY", 13, PoolTheme.GOLD.lerp(Color("ffd978"), ca), 700, false,
+			HORIZONTAL_ALIGNMENT_RIGHT, 100, 2)
+		var rr := Rect2(Vector2(rx, y + 98), Vector2(rw, 36.0 + 30.0 * float(PoolMPRules.LIST.size()) + 14.0))
+		PoolTheme.panel(self, rr)
+		PoolTheme.caps(self, rr.position + Vector2(22, 34), "RULES", PoolTheme.GOLD, 11)
+		var rules: Dictionary = l.get("rules", {})
+		var ry := rr.position.y + 66.0
+		for spec in PoolMPRules.LIST:
+			_text(Vector2(rr.position.x + 22, ry), str(spec.label), 14, PoolTheme.MUTED, 500)
+			_text(Vector2(rr.position.x + 22, ry), PoolMPRules.name_of(rules, spec.key), 14, PoolTheme.WHITE, 700, false,
+				HORIZONTAL_ALIGNMENT_RIGHT, rr.size.x - 44.0)
+			ry += 30.0
+		# what to do next
+		var by := y + 280.0
+		var bw := 200.0
+		var bx := x + (1.0 - e) * -40.0
+		var status := ""
+		if i_host:
+			var can := online.other_here() and online.other_ready() and not guest.is_empty()
+			_button(Rect2(Vector2(bx, by), Vector2(260, 60)), "lobby_start", "Start match", true, can)
+			_button(Rect2(Vector2(bx + 276, by + 8), Vector2(bw - 40, 44)), "lobby_edit", "Edit rules", false)
+			_button(Rect2(Vector2(bx + 276 + bw - 24, by + 8), Vector2(bw - 40, 44)), "lobby_invite", "Invite", false)
+			if guest.is_empty():
+				status = "Invite a friend, share the code, or wait for someone to join from Browse."
+			elif not online.other_here():
+				status = "%s is connecting..." % str(guest.get("display_name", "They"))
+			elif not online.other_ready():
+				status = "Waiting for %s to get ready." % str(guest.get("display_name", "them"))
+			else:
+				status = "%s is ready. Start when you are." % str(guest.get("display_name", "They"))
+		else:
+			_button(Rect2(Vector2(bx, by), Vector2(260, 60)), "lobby_ready", "Not ready" if my_ready else "Ready", not my_ready)
+			status = "Waiting for %s to start." % str(host.get("display_name", "the host")) if my_ready \
+				else "Hit Ready when you're set. %s starts the match." % str(host.get("display_name", "The host"))
+		_button(Rect2(Vector2(bx + 276 + 2.0 * (bw - 24) + (0.0 if i_host else -2.0 * (bw - 24)), by + 8), Vector2(bw - 40, 44)),
+			"lobby_leave", "Leave", false)
+		_text(Vector2(bx, by + 96), status, 15, PoolTheme.MUTED, 500)
+
+	# --- online: friends --------------------------------------------------------
+
+	func _draw_friends() -> void:
+		draw_rect(Rect2(Vector2.ZERO, size), Color(0, 0, 0, 0.45))
+		_hit(Rect2(Vector2.ZERO, size), "fr_bg")
+		var pw := minf(470.0, size.x - 80.0)
+		var panel := Rect2(Vector2(size.x - pw - 40.0, 36.0), Vector2(pw, size.y - 72.0))
+		_hit(panel, "fr_panel")
+		PoolTheme.panel(self, panel, Color(0, 0, 0, 0), 18)
+		if fr_chat != "":
+			_draw_chat(panel)
+			return
+		var px := panel.position.x + 28.0
+		var inner := pw - 56.0
+		var y := panel.position.y + 52.0
+		_text(Vector2(px, y), "FRIENDS", 30, PoolTheme.WHITE, 800, true)
+		_close_x(Vector2(panel.end.x - 44, y - 10), "fr_close")
+		y += 28.0
+		# tabs
+		var req := online.incoming_requests()
+		var tabs := [["friends", "Friends"], ["requests", "Requests" + (" (%d)" % req if req > 0 else "")], ["add", "Add"]]
+		var tw := inner / 3.0
+		draw_style_box(PoolTheme.box(PoolTheme.RAISED, 12, PoolTheme.HAIR, 1), Rect2(Vector2(px, y), Vector2(inner, 40)))
+		for i in 3:
+			var nm := "fr_tab:" + str(tabs[i][0])
+			var r := Rect2(Vector2(px + float(i) * tw, y), Vector2(tw, 40)).grow(-3)
+			_hit(r, nm)
+			var on := fr_tab == str(tabs[i][0])
+			if on:
+				draw_style_box(PoolTheme.box(Color(1, 1, 1, 0.1), 9), r)
+			_text(Vector2(r.position.x, r.position.y + 23), str(tabs[i][1]), 14,
+				PoolTheme.WHITE if on else PoolTheme.MUTED.lerp(PoolTheme.WHITE, _a(nm)), 700, false, HORIZONTAL_ALIGNMENT_CENTER, r.size.x)
+		y += 60.0
+		var bottom := panel.end.y - 24.0
+		match fr_tab:
+			"friends":
+				var list: Array = []
+				for f in online.friends:
+					if str(f.status) == "friend":
+						list.append(f)
+				list.sort_custom(func(a, b):
+					var oa := online.is_online(str(a.id))
+					var ob := online.is_online(str(b.id))
+					if oa != ob:
+						return oa
+					return str(a.display_name).naturalnocasecmp_to(str(b.display_name)) < 0)
+				if list.is_empty():
+					_text(Vector2(px, y + 30), "No friends yet.", 18, PoolTheme.WHITE, 700)
+					_text(Vector2(px, y + 56), "Find people by their Discord name in Add.", 14, PoolTheme.MUTED, 400)
+				var row_h := 66.0
+				fr_scroll = clampi(fr_scroll, 0, maxi(0, list.size() - 1))
+				for i in range(fr_scroll, list.size()):
+					if y + row_h > bottom:
+						break
+					var f: Dictionary = list[i]
+					var id := str(f.id)
+					var r := Rect2(Vector2(px, y), Vector2(inner, row_h - 6))
+					var nm := "fr_open:" + id
+					_hit(r, nm)
+					var a := _a(nm)
+					draw_style_box(PoolTheme.box(Color(1, 1, 1, 0.02 + a * 0.05), 12), r)
+					_player_pic(Rect2(r.position + Vector2(10, 10), Vector2(40, 40)), f)
+					var st := online.status_of(id)
+					draw_circle(r.position + Vector2(46, 46), 6.0, PoolTheme.PANEL, true, -1.0, true)
+					draw_circle(r.position + Vector2(46, 46), 4.5, _status_col(st), true, -1.0, true)
+					_text(r.position + Vector2(64, 27), _fit(str(f.display_name), 16, 700, inner - 180.0), 16, PoolTheme.WHITE, 700)
+					_text(r.position + Vector2(64, 46), _status_word(st), 12, _status_col(st) if st != "offline" else PoolTheme.FAINT, 600)
+					var unread := int(f.get("unread", 0))
+					if unread > 0:
+						PoolTheme.badge(self, Vector2(r.end.x - 12, r.position.y + 19), "%d NEW" % unread)
+					elif not online.lobby.is_empty() and online.lobby.get("guest") == null and st != "offline":
+						var ib := Rect2(Vector2(r.end.x - 12 - 84, r.position.y + 14), Vector2(84, 32))
+						_button(ib, "fr_invite:" + id, "Invite", false)
+					y += row_h
+			"requests":
+				var any := false
+				for f in online.friends:
+					if str(f.status) == "friend" or y + 66 > bottom:
+						continue
+					any = true
+					var id := str(f.id)
+					var r := Rect2(Vector2(px, y), Vector2(inner, 60))
+					draw_style_box(PoolTheme.box(Color(1, 1, 1, 0.02), 12), r)
+					_player_pic(Rect2(r.position + Vector2(10, 10), Vector2(40, 40)), f)
+					_text(r.position + Vector2(64, 27), _fit(str(f.display_name), 16, 700, inner - 240.0), 16, PoolTheme.WHITE, 700)
+					if str(f.status) == "incoming":
+						_text(r.position + Vector2(64, 46), "Wants to be friends", 12, PoolTheme.GOLD, 600)
+						_button(Rect2(Vector2(r.end.x - 12 - 76, r.position.y + 14), Vector2(76, 32)), "fr_accept:" + id, "Accept", true)
+						_button(Rect2(Vector2(r.end.x - 12 - 76 - 8 - 44, r.position.y + 14), Vector2(44, 32)), "fr_decline:" + id, "✕", false)
+					else:
+						_text(r.position + Vector2(64, 46), "Request sent", 12, PoolTheme.FAINT, 600)
+						_button(Rect2(Vector2(r.end.x - 12 - 84, r.position.y + 14), Vector2(84, 32)), "fr_cancel:" + id, "Cancel", false)
+					y += 66.0
+				if not any:
+					_text(Vector2(px, y + 30), "No requests.", 18, PoolTheme.WHITE, 700)
+					_text(Vector2(px, y + 56), "When someone adds you, it shows up here.", 14, PoolTheme.MUTED, 400)
+			"add":
+				PoolTheme.caps(self, Vector2(px, y), "FIND A PLAYER", PoolTheme.GOLD, 11)
+				_edit("fr_search", Rect2(Vector2(px, y + 14), Vector2(inner - 108, 44)), "Discord name", 40, _search)
+				_button(Rect2(Vector2(px + inner - 96, y + 14), Vector2(96, 44)), "fr_search", "Search", true)
+				_text(Vector2(px, y + 84), "Your name for them to find: %s" % str(online.me.get("username", "")), 13, PoolTheme.MUTED, 500)
+				y += 112.0
+				if fr_searched and fr_results.is_empty():
+					_text(Vector2(px, y + 20), "Nobody by that name has played yet.", 15, PoolTheme.MUTED, 500)
+				for pl in fr_results:
+					if y + 66 > bottom:
+						break
+					var id := str(pl.id)
+					var r := Rect2(Vector2(px, y), Vector2(inner, 60))
+					draw_style_box(PoolTheme.box(Color(1, 1, 1, 0.02), 12), r)
+					_player_pic(Rect2(r.position + Vector2(10, 10), Vector2(40, 40)), pl)
+					_text(r.position + Vector2(64, 27), _fit(str(pl.display_name), 16, 700, inner - 200.0), 16, PoolTheme.WHITE, 700)
+					_text(r.position + Vector2(64, 46), "@%s  ·  %d trophies" % [str(pl.username), int(pl.get("trophies", 0))], 12,
+						PoolTheme.FAINT, 500)
+					var rel := str(online.friend(id).get("status", ""))
+					if rel == "":
+						_button(Rect2(Vector2(r.end.x - 12 - 76, r.position.y + 14), Vector2(76, 32)), "fr_add:" + id, "Add", true)
+					else:
+						var word := "Friends" if rel == "friend" else ("Sent" if rel == "outgoing" else "Asked you")
+						_text(Vector2(r.end.x - 12 - 100, r.position.y + 35), word, 13, PoolTheme.MUTED, 700, false,
+							HORIZONTAL_ALIGNMENT_RIGHT, 100)
+					y += 66.0
+
+	func _close_x(c: Vector2, nm: String) -> void:
+		_hit(Rect2(c - Vector2(20, 20), Vector2(40, 40)), nm)
+		var a := _a(nm)
+		draw_circle(c, 18.0, Color(1, 1, 1, 0.05 + a * 0.08), true, -1.0, true)
+		draw_arc(c, 18.0, 0.0, TAU, 40, Color(1, 1, 1, 0.14 + a * 0.2), 1.0, true)
+		var xc := PoolTheme.MUTED.lerp(PoolTheme.WHITE, a)
+		draw_line(c + Vector2(-5, -5), c + Vector2(5, 5), xc, 2.0, true)
+		draw_line(c + Vector2(5, -5), c + Vector2(-5, 5), xc, 2.0, true)
+
+	func _draw_chat(panel: Rect2) -> void:
+		var f := online.friend(fr_chat)
+		var px := panel.position.x + 24.0
+		var inner := panel.size.x - 48.0
+		var y := panel.position.y + 24.0
+		# header
+		var back := Rect2(Vector2(px - 6, y), Vector2(40, 52))
+		_hit(back, "fr_back")
+		_chevron(back.get_center(), -1.0, PoolTheme.MUTED.lerp(PoolTheme.WHITE, _a("fr_back")))
+		_player_pic(Rect2(Vector2(px + 38, y + 4), Vector2(44, 44)), f)
+		var st := online.status_of(fr_chat)
+		_text(Vector2(px + 94, y + 24), _fit(str(f.get("display_name", "?")), 18, 700, inner - 260.0), 18, PoolTheme.WHITE, 700)
+		_text(Vector2(px + 94, y + 44), _status_word(st), 12, _status_col(st) if st != "offline" else PoolTheme.FAINT, 600)
+		var can_invite := not online.lobby.is_empty() and online.lobby.get("guest") == null
+		if can_invite:
+			_button(Rect2(Vector2(panel.end.x - 24 - 84 - 52, y + 10), Vector2(84, 34)), "fr_invite:" + fr_chat, "Invite", true)
+		_close_x(Vector2(panel.end.x - 24 - 18, y + 27), "fr_close")
+		y += 68.0
+		PoolTheme.divider(self, panel.position.x, panel.end.x, y)
+		var remove := Rect2(Vector2(px, panel.end.y - 22 - 18), Vector2(120, 18))
+		# the box you type in
+		var input_y := panel.end.y - 24.0 - 48.0 - 26.0
+		_edit("chat", Rect2(Vector2(px, input_y), Vector2(inner - 96, 48)), "Message", 500, _send_chat)
+		_button(Rect2(Vector2(px + inner - 84, input_y), Vector2(84, 48)), "fr_send", "Send", true)
+		_hit(remove, "fr_remove:" + fr_chat)
+		_text(Vector2(px, panel.end.y - 26), "Remove friend", 12, PoolTheme.FAINT.lerp(PoolTheme.DANGER, _a("fr_remove:" + fr_chat)), 600)
+		# messages, newest at the bottom
+		var msgs: Array = online.conversations.get(fr_chat, [])
+		var top := y + 12.0
+		var by := input_y - 14.0
+		var font := PoolTheme.font(400)
+		var maxw := inner * 0.72
+		chat_scroll = clampi(chat_scroll, 0, maxi(0, msgs.size() - 1))
+		var i := msgs.size() - 1 - chat_scroll
+		if msgs.is_empty():
+			_text(Vector2(px, y + 60), "Say hello.", 15, PoolTheme.MUTED, 500, false, HORIZONTAL_ALIGNMENT_CENTER, inner)
+		while i >= 0:
+			var m: Dictionary = msgs[i]
+			var mine := str(m.sender) == online.user_id
+			var body := str(m.body)
+			var invite := str(m.get("kind", "")) == "invite"
+			var tsz := font.get_multiline_string_size(body, HORIZONTAL_ALIGNMENT_LEFT, maxw - 28.0, 15)
+			var bw := minf(maxw, tsz.x + 28.0)
+			var bh := tsz.y + 20.0
+			if invite and not mine:
+				bw = maxw
+				bh += 44.0
+			if by - bh < top:
+				break
+			var bx := panel.end.x - 24.0 - bw if mine else px
+			var r := Rect2(Vector2(bx, by - bh), Vector2(bw, bh))
+			var bg := Color(PoolTheme.GOLD, 0.16) if mine else Color(1, 1, 1, 0.06)
+			draw_style_box(PoolTheme.box(bg, 14, Color(PoolTheme.GOLD, 0.5) if invite else Color(0, 0, 0, 0), 1 if invite else 0), r)
+			draw_multiline_string(font, r.position + Vector2(14, 10 + 15.0 * 0.95), body, HORIZONTAL_ALIGNMENT_LEFT, maxw - 28.0,
+				15, -1, PoolTheme.WHITE)
+			if invite and not mine and m.get("lobby_id") != null:
+				_button(Rect2(Vector2(r.position.x + 14, r.end.y - 44), Vector2(110, 34)), "fr_join:" + str(m.lobby_id), "Join", true)
+			by -= bh + 8.0
+			i -= 1
 
 	# --- little helpers ---------------------------------------------------------
 
@@ -1292,7 +2209,7 @@ class Screen extends Control:
 
 # ---------------------------------------------------------------------------
 
-func setup(state: Dictionary, profile: PoolProfile = null) -> void:
+func setup(state: Dictionary, profile: PoolProfile = null, online: PoolOnline = null) -> void:
 	layer = 5
 	root = Control.new()
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1307,13 +2224,20 @@ func setup(state: Dictionary, profile: PoolProfile = null) -> void:
 	screen.preview = preview
 	screen.picked_cue = PoolCues.index_of(str(state.get("equipped", "house")))
 	screen.profile = profile
+	screen.online = online
 	if profile != null:
 		profile.message.connect(screen.show_toast)
+	if online != null:
+		online.message_received.connect(_on_message)
+		online.lobby_event.connect(_on_lobby_event)
 	root.add_child(screen)
 	screen.start_pressed.connect(func(d): start_pressed.emit(d))
 	screen.state_changed.connect(func(st): state_changed.emit(st))
 	screen.quit_pressed.connect(func(): quit_pressed.emit())
 	screen.ui_sound.connect(func(k): ui_sound.emit(k))
+	screen.online_start.connect(func(): online_start.emit())
+	screen.buy_requested.connect(func(id): buy_requested.emit(id))
+	screen.code_entered.connect(func(c): code_entered.emit(c))
 
 	_layout()
 	get_viewport().size_changed.connect(_layout)
@@ -1345,14 +2269,42 @@ func bar_fraction() -> float:
 
 func set_state(state: Dictionary) -> void:
 	screen.state = state
-	screen.picked_cue = PoolCues.index_of(str(state.get("equipped", "house")))
+	if screen.page != "shop" or not visible:
+		screen.picked_cue = PoolCues.index_of(str(state.get("equipped", "house")))
 	screen.queue_redraw()
 
 
-func open() -> void:
+# Something from a friend while the menu is up: a toast, unless you're
+# already reading their messages.
+func _on_message(m: Dictionary) -> void:
+	if not visible or screen.online == null:
+		return
+	var from := str(m.get("sender", ""))
+	if screen.friends_open and screen.fr_chat == from:
+		return
+	var who := str(screen.online.friend(from).get("display_name", "A friend"))
+	if str(m.get("kind", "")) == "invite":
+		screen.show_toast("%s invited you to play. Open Friends to join." % who)
+	else:
+		screen.show_toast("%s: %s" % [who, str(m.get("body", "")).left(70)])
+	ui_sound.emit("tick")
+
+
+func _on_lobby_event(event: String, _p: Dictionary) -> void:
+	if not visible:
+		return
+	match event:
+		"closed":
+			screen.show_toast("The host closed the lobby.")
+		"left":
+			screen.show_toast("The other player left.")
+			screen.my_ready = false
+
+
+func open(page := "main") -> void:
 	visible = true
 	screen.visible = true
-	screen.page = "main"
+	screen.page = page
 	screen.page_t = 0.0
 	screen.set_process_unhandled_key_input(true)
 	preview.set_live(false)

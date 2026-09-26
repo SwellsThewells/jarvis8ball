@@ -276,6 +276,14 @@ func _ready() -> void:
 	guides_allowed = bool(save_state.get("guides", true))
 	_apply_skin(str(save_state.equipped))
 
+	online = PoolOnline.new()
+	online.name = "Online"
+	add_child(online)
+	online.lobby_event.connect(_on_lobby_event)
+	online.message_received.connect(_on_message)
+	online.me_changed.connect(_sync_wallet)
+	online.auth_changed.connect(_sync_wallet)
+
 	profile = PoolProfile.new()
 	profile.name = "Profile"
 	add_child(profile)
@@ -285,11 +293,14 @@ func _ready() -> void:
 
 	menu = PoolMenu.new()
 	add_child(menu)
-	menu.setup(save_state, profile)
-	profile.setup()
+	menu.setup(save_state, profile, online)
+	profile.setup(online)
 	menu.start_pressed.connect(_start_match)
 	menu.state_changed.connect(_on_state_changed)
 	menu.quit_pressed.connect(func(): get_tree().quit())
+	menu.online_start.connect(_host_start)
+	menu.buy_requested.connect(_buy_cue)
+	menu.code_entered.connect(_redeem_code)
 	menu.ui_sound.connect(func(k): sound.ui(k))
 	hud.menu_confirmed.connect(_to_menu)
 	hud.rack_again.connect(_restart)
@@ -303,15 +314,19 @@ func _ready() -> void:
 	new_rack()
 	phase = Phase.MENU
 	hud.set_shown(false)
+	_sync_wallet()
 	menu.open()
 
 
 func _on_state_changed(state: Dictionary) -> void:
-	save_state = state
+	# coins and owned cues only change through buying, never from the menu
+	save_state.equipped = state.equipped
+	save_state.difficulty = state.difficulty
+	save_state.guides = state.guides
 	ai.skill = clampi(int(state.difficulty), 1, 10)
 	guides_allowed = bool(state.get("guides", true))
 	_apply_skin(str(state.equipped))
-	PoolCues.save_state(state)
+	PoolCues.save_state(save_state)
 	_refresh_hud()
 
 
@@ -399,9 +414,14 @@ func _refresh_hud() -> void:
 		yl = [PoolSim.EIGHT]
 	if foe_group != PoolRules.OPEN and fl.is_empty() and sim.ball(PoolSim.EIGHT).on_table:
 		fl = [PoolSim.EIGHT]
-	hud.set_names("You", ai.label())
+	if mp and int(mp_rules.get("race", 1)) > 1:
+		hud.set_names("You  %d" % mp_score[0], "%s  %d" % [_foe_name(), mp_score[1]])
+	else:
+		hud.set_names("You", _foe_name())
 	hud.set_sides(you_group, foe_group, yl, fl, your_turn)
 	var note := ""
+	if _call_all() and your_turn and not _on_eight(you_group):
+		note = ("called, %s" % PoolSim.POCKET_NAMES[called_pocket].trim_prefix("the ")) if called_pocket >= 0 else "call your pocket"
 	if _on_eight(you_group) and your_turn:
 		note = ("8, %s" % PoolSim.POCKET_NAMES[called_pocket].trim_prefix("the ")) if called_pocket >= 0 else "on the 8, call it"
 	hud.set_note(note)
@@ -417,7 +437,12 @@ func _shooter_group() -> String:
 
 # You are on the 8 and it is your shot: a pocket has to be named first.
 func _calling() -> bool:
-	return your_turn and phase == Phase.AIM and _on_eight(you_group)
+	return your_turn and phase == Phase.AIM and (_on_eight(you_group) or _call_all())
+
+
+# Online, with "call every shot": every shot after the break needs a pocket.
+func _call_all() -> bool:
+	return mp and str(mp_rules.get("call", "eight")) == "all" and broken
 
 
 # ---------------------------------------------------------------------------
@@ -429,8 +454,11 @@ func _process(delta: float) -> void:
 		if _play_time >= 30.0:
 			_bank_play_time()
 	_update_presence(delta)
-	if hud.confirm_open():
+	if mp:
+		_mp_update(delta)
+	if hud.confirm_open() and not mp:
 		# paused: the room holds still, the view settles where it is
+		# (not online, though: the other player's game carries on)
 		_update_mouse_mode()
 		return
 
@@ -454,14 +482,20 @@ func _process(delta: float) -> void:
 			_update_watch_focus(delta)
 			_play_events()
 			if not sim.is_moving():
-				_resolve_shot()
+				if mp and not shot_by_you:
+					_mp_try_settle()
+				else:
+					_resolve_shot()
 		Phase.AI_THINK:
-			ai_timer += delta
-			cue_view.hide_stick()
-			cue_view.clear_guide()
-			_poll_ai()
-			if ai_have_shot and brain.ready_to_aim:
-				_bot_begin_aim()
+			if mp:
+				_mp_their_turn_update(delta)
+			else:
+				ai_timer += delta
+				cue_view.hide_stick()
+				cue_view.clear_guide()
+				_poll_ai()
+				if ai_have_shot and brain.ready_to_aim:
+					_bot_begin_aim()
 		Phase.AI_AIM:
 			# a couple of feathering strokes, a pause at the back, and through.
 			# The clock only runs while he is steady over the ball.
@@ -493,7 +527,10 @@ func _process(delta: float) -> void:
 	# a glass only stays in your hand while the button's held
 	if bar.holding() and not Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
 		bar.release()
-	brain.update(delta)
+	if mp:
+		_mp_drive_avatar(delta)
+	else:
+		brain.update(delta)
 	_update_ko(delta)
 	_update_walk(delta)
 	_bodies(delta)
@@ -512,7 +549,7 @@ func _process(delta: float) -> void:
 		_calling() or at_bar)
 	hud.set_punch(punch_cd / PUNCH_COOLDOWN, at_bot)
 	hud.set_tip(phase == Phase.AIM and player.down, tip_adjust)
-	hud.set_cash(int(save_state.get("cash", 0)), phase != Phase.MENU and player.pos.x < -2.2)
+	hud.set_cash(coins(), phase != Phase.MENU and player.pos.x < -2.2)
 
 
 # The cue comes up quickly when it has to clear something and settles back
@@ -662,12 +699,19 @@ func _update_stroke(delta: float) -> void:
 		return
 
 	if phase == Phase.STROKE:
-		_play_shot({
+		var shot := {
 			"dir": aim_dir,
 			"speed": 0.55 + pow(shot_power, 1.35) * MAX_SPEED,
 			"english": english,
 			"pocket": called_pocket,
-		})
+		}
+		if mp:
+			mp_seq += 1
+			var cb := sim.ball(PoolSim.CUE)
+			online.lobby_send("shot", {"seq": mp_seq, "dir": [aim_dir.x, aim_dir.y], "speed": shot.speed,
+				"english": [english.x, english.y], "pocket": called_pocket, "pull": stroke_pull,
+				"place": [cb.pos.x, cb.pos.y]})
+		_play_shot(shot)
 		shot_by_you = true
 	else:
 		_play_shot(ai_shot)
@@ -790,7 +834,7 @@ func _looking_at_bot() -> bool:
 
 # Your eye is on him and a click would do nothing else.
 func _can_punch() -> bool:
-	return phase != Phase.PLACE and not _calling() and punch_t < 0.0 and _looking_at_bot()
+	return not mp and phase != Phase.PLACE and not _calling() and punch_t < 0.0 and _looking_at_bot()
 
 
 # One click on him and you throw a punch: the arm drawn right back past your
@@ -1156,8 +1200,11 @@ func _click_pocket() -> void:
 		hud.say("Call cancelled", "call")
 	else:
 		called_pocket = hover_pocket
-		hud.say("8 ball, %s" % PoolSim.POCKET_NAMES[called_pocket].trim_prefix("the "), "call")
+		var what := "8 ball" if _on_eight(you_group) else "Calling"
+		hud.say("%s, %s" % [what, PoolSim.POCKET_NAMES[called_pocket].trim_prefix("the ")], "call")
 	sound.ui("click")
+	if mp:
+		online.lobby_send("call", {"pocket": called_pocket})
 	_refresh_hud()
 
 
@@ -1228,6 +1275,8 @@ func _confirm_placement() -> void:
 	sound.play("rail", table.ball_world(sim, PoolSim.CUE), 0.12)
 	ball_in_hand = false
 	behind_head = false
+	if mp:
+		online.lobby_send("place", {"p": [place_point.x, place_point.y]})
 	cue_view.clear_guide()
 	phase = Phase.AIM
 	var target := sim.ball(1) if sim.ball(1).on_table else sim.ball(PoolSim.EIGHT)
@@ -1270,12 +1319,20 @@ func _bank_play_time() -> void:
 
 
 func _resolve_shot() -> void:
+	if mp and shot_by_you:
+		_mp_send_settle()
 	var shooter := _shooter_group()
 	var on_eight := _on_eight(shooter)
 	var events := sim.events.duplicate()
 	var res := PoolRules.analyze(events, shooter, on_eight, called_pocket if on_eight else -1)
 	if your_turn:
 		_count_shot(events, res)
+	if mp:
+		var side := 0 if your_turn else 1
+		mp_fouls[side] = int(mp_fouls[side]) + 1 if res.foul else 0
+		if bool(mp_rules.get("three_fouls", false)) and int(mp_fouls[side]) >= 3 and not res.won and not res.lost:
+			res.lost = true
+			res.reason = "Three fouls in a row"
 
 	var was_break := not broken
 	broken = true
@@ -1285,7 +1342,11 @@ func _resolve_shot() -> void:
 		phase = Phase.OVER
 		hud.say("8 on the break, re-rack", "brass")
 		await get_tree().create_timer(1.6).timeout
-		new_rack()
+		if mp:
+			if not mp_over:
+				_mp_rack(_next_seed(rack_seed))
+		else:
+			new_rack()
 		return
 
 	for id in res.potted:
@@ -1319,7 +1380,7 @@ func _resolve_shot() -> void:
 			else:
 				foe_group = claim
 				you_group = PoolRules.other_group(claim)
-			hud.say("%s %s" % ["You take" if your_turn else ai.label() + " takes", "solids" if claim == PoolRules.SOLIDS else "stripes"], "good")
+			hud.say("%s %s" % ["You take" if your_turn else _foe_name() + " takes", "solids" if claim == PoolRules.SOLIDS else "stripes"], "good")
 
 	var illegal_break := false
 	if was_break and not res.foul:
@@ -1331,11 +1392,24 @@ func _resolve_shot() -> void:
 			illegal_break = true
 
 	var keep: bool = res.own > 0 and not res.foul and not illegal_break
+	# calling every shot: one of yours has to drop in the pocket you named
+	var call_miss := false
+	if keep and _call_all() and not on_eight:
+		var in_call := false
+		for id in res.potted:
+			if id != PoolSim.CUE and (shooter == PoolRules.OPEN or PoolRules.group_of(id) == shooter) \
+					and int(res.pockets.get(id, -1)) == called_pocket:
+				in_call = true
+		if not in_call:
+			keep = false
+			call_miss = true
 
 	if res.foul:
 		hud.say("Foul: %s" % str(res.reason).to_lower(), "foul")
 	elif illegal_break:
 		hud.say("Weak break, ball in hand", "foul")
+	elif call_miss:
+		hud.say("Not in the called pocket, turn over", "foul")
 	elif keep:
 		hud.say("Shoot again" if res.own == 1 else "%d down, shoot again" % res.own, "good")
 	elif res.potted.is_empty():
@@ -1346,13 +1420,20 @@ func _resolve_shot() -> void:
 		ball_in_hand = res.foul or illegal_break
 	else:
 		ball_in_hand = false
-	behind_head = false
+	behind_head = mp and ball_in_hand and str(mp_rules.get("scratch", "anywhere")) == "kitchen"
 	called_pocket = -1
 	table.clear_pocket_glows()
 	shot_power = 0.0
 	pull_px = 0.0
 	_refresh_hud()
+	_begin_turn()
 
+
+# Whoever is up now takes it from here: you on your feet, the house player
+# thinking, or the other player's machine.
+func _begin_turn() -> void:
+	if mp:
+		mp_clock = float(mp_rules.get("clock", 0))
 	if your_turn:
 		# your turn starts on your feet, where you got down for the last one
 		_leave_stance()
@@ -1369,6 +1450,10 @@ func _resolve_shot() -> void:
 			phase = Phase.AIM
 			if _on_eight(you_group):
 				hud.say("You're on the 8, call a pocket", "call")
+			elif _call_all():
+				hud.say("Call your pocket", "call")
+	elif mp:
+		_mp_their_turn()
 	else:
 		_start_ai()
 
@@ -1393,14 +1478,21 @@ func _finish(res: Dictionary, _shooter: String) -> void:
 	var you_won := shooter_won if your_turn else not shooter_won
 	if res.lost:
 		you_won = not your_turn
+	if mp:
+		_mp_rack_over(you_won, str(res.reason))
+		return
 	last_result = ("Won against %s" if you_won else "Lost to %s") % ai.label()
-	# something for the bar either way
+	# something to spend either way
 	var pay := PoolCues.WIN_CASH if you_won else PoolCues.LOSS_CASH
-	save_state.cash = int(save_state.get("cash", 0)) + pay
-	PoolCues.save_state(save_state)
+	if online.signed_in():
+		online.bot_reward(you_won)
+	else:
+		save_state.cash = int(save_state.get("cash", 0)) + pay
+		PoolCues.save_state(save_state)
+		_sync_wallet()
 	_bank_play_time()
 	var xp := profile.record_bot_game(you_won, ai.skill)
-	var reward := "+$%d for the bar" % pay
+	var reward := "+%d coins" % pay
 	if profile.signed_in:
 		reward += "  ·  +%d XP" % xp
 	if you_won:
@@ -1809,6 +1901,10 @@ func _update_presence(delta: float) -> void:
 				state = "In settings"
 			"profile":
 				state = "Looking at their profile"
+	elif mp:
+		details = "Playing online vs %s" % _foe_name()
+		since = match_started
+		state = "Racks %d-%d" % [mp_score[0], mp_score[1]] if not mp_over else last_result
 	else:
 		details = "Playing 8-ball vs %s (level %d)" % [ai.label(), ai.skill]
 		since = match_started
@@ -1995,6 +2091,15 @@ func _unhandled_input(ev: InputEvent) -> void:
 
 
 func _to_menu() -> void:
+	if mp:
+		_mp_back_to_lobby()
+		return
+	_leave_table()
+	menu.open()
+
+
+# Everything back as it was before you walked up to the table.
+func _leave_table() -> void:
 	if _thread != null and _thread.is_started():
 		_thread.wait_to_finish()
 		_thread = null
@@ -2016,11 +2121,14 @@ func _to_menu() -> void:
 	phase = Phase.MENU
 	stand = 1.0
 	hud.set_shown(false)
-	menu.set_state(save_state)
-	menu.open()
+	hud.set_online(false)
+	_sync_wallet()
 
 
 func _restart() -> void:
+	if mp:
+		_mp_rematch()
+		return
 	if _thread != null and _thread.is_started():
 		_thread.wait_to_finish()
 		_thread = null
@@ -2035,6 +2143,556 @@ func _restart() -> void:
 	hud.set_thinking(false)
 	hud.close_confirm()
 	new_rack()
+
+
+# ---------------------------------------------------------------------------
+# Coins
+#
+# One purse for everything: drinks at the bar and cues in the shop. Signed in
+# with Discord it's kept online (the server does the sums, so it can't be
+# edited), otherwise in the local save.
+# ---------------------------------------------------------------------------
+
+func coins() -> int:
+	return online.coins() if online.signed_in() else int(save_state.get("cash", 0))
+
+
+# Takes coins for something at the bar. False when you can't cover it.
+func try_spend(n: int) -> bool:
+	if online.signed_in():
+		if online.coins() < n:
+			return false
+		online.me["coins"] = online.coins() - n     # straight away; the server has the last word
+		online.spend(n)
+		_sync_wallet()
+		return true
+	var have := int(save_state.get("cash", 0))
+	if have < n:
+		return false
+	save_state.cash = have - n
+	PoolCues.save_state(save_state)
+	_sync_wallet()
+	return true
+
+
+# What the menu shows: your coins and cues from wherever they're kept, the
+# rest from the local save.
+func _menu_state() -> Dictionary:
+	var st := save_state.duplicate(true)
+	if online.signed_in():
+		st.owned = online.owned_cues().duplicate()
+		st.cash = online.coins()
+		if not (st.owned as Array).has(str(st.equipped)):
+			st.equipped = "house"
+	return st
+
+
+func _sync_wallet() -> void:
+	if menu == null:
+		return
+	var st := _menu_state()
+	_apply_skin(str(st.equipped))
+	menu.set_state(st)
+
+
+func _buy_cue(id: String) -> void:
+	var cue := PoolCues.by_id(id)
+	var price := int(cue.price)
+	if online.signed_in():
+		var err := await online.buy_cue(id)
+		if err != "":
+			menu.screen.show_toast("You need %d more coins." % (price - online.coins()) if err.contains("coins") else err)
+			return
+	else:
+		var have := int(save_state.get("cash", 0))
+		if have < price:
+			menu.screen.show_toast("You need %d more coins." % (price - have))
+			return
+		save_state.cash = have - price
+		if not (save_state.owned as Array).has(id):
+			save_state.owned.append(id)
+	save_state.equipped = id
+	PoolCues.save_state(save_state)
+	_sync_wallet()
+	sound.ui("equip")
+	menu.screen.show_toast("%s is yours." % str(cue.name))
+
+
+func _redeem_code(code: String) -> void:
+	var id := PoolCues.redeem(code)
+	var fresh := false
+	if id != "":
+		if online.signed_in():
+			fresh = not online.owned_cues().has(id)
+			id = await online.redeem_code(code)
+		else:
+			fresh = not (save_state.owned as Array).has(id)
+			if fresh:
+				save_state.owned.append(id)
+		if id != "":
+			save_state.equipped = id
+			PoolCues.save_state(save_state)
+			_sync_wallet()
+	menu.screen.code_result(id, fresh)
+
+
+# A message while you're at the table: a line in the corner, no more.
+func _on_message(m: Dictionary) -> void:
+	if phase == Phase.MENU:
+		return
+	var f := online.friend(str(m.get("sender", "")))
+	var who := str(f.get("display_name", "A friend"))
+	if str(m.get("kind", "")) == "invite":
+		hud.say("%s invited you to play. Open Friends in the menu" % who, "brass")
+	else:
+		hud.say("%s: %s" % [who, str(m.get("body", "")).left(60)], "info")
+
+
+# ---------------------------------------------------------------------------
+# Online matches
+#
+# Both players run the whole game. Whoever's turn it is plays exactly as they
+# would against the house player, and their shot goes to the other machine
+# as the same numbers _play_shot takes. That machine plays it too, then waits
+# for the shooter's "settle": where every ball came to rest and what happened
+# on the way. It takes that as the truth before applying the rules, so both
+# sides always agree, even if their physics drifted by a hair.
+#
+# Everything about the other player's turn is queued and only acted on once
+# it's their turn here, so nothing that arrives early can land mid-shot.
+# ---------------------------------------------------------------------------
+
+var online: PoolOnline
+var mp := false
+var mp_match: Dictionary = {}
+var mp_rules: Dictionary = {}
+var mp_score := [0, 0]            # racks won: you, them
+var mp_seq := 0                   # shots played this match, by both of you
+var mp_inbox: Array = []          # [event, payload] for their turn
+var mp_settles := {}              # shot number -> the shooter's settle
+var mp_remote: Dictionary = {}    # their last pose
+var mp_clock := 0.0               # shot clock, seconds left
+var mp_fouls := [0, 0]            # fouls in a row: you, them
+var mp_breaker_me := true
+var mp_over := false
+var mp_want_rematch := [false, false]
+var mp_opp: Dictionary = {}
+var mp_heard_ms := 0              # when anything last came from them (they send ten times a second)
+var mp_opp_left := false          # gone back to the lobby, or out of it
+var _mp_pose_ms := 0
+var _mp_pose_last: Dictionary = {}
+var _mp_result_sent := false
+
+
+func _foe_name() -> String:
+	if mp:
+		return str(mp_opp.get("display_name", mp_opp.get("username", "Opponent")))
+	return ai.label()
+
+
+static func _next_seed(s: int) -> int:
+	return int((s * 1103515245 + 12345) & 0x7fffffff)
+
+
+# The host pressed Start in the lobby.
+func _host_start() -> void:
+	if not online.is_host() or mp:
+		return
+	var m := await online.start_match()
+	if m.has("error"):
+		menu.screen.show_toast(str(m.error))
+		return
+	online.lobby_send("start", {"match": m})
+	start_online(m)
+
+
+func start_online(m: Dictionary) -> void:
+	if _thread != null and _thread.is_started():
+		_thread.wait_to_finish()
+		_thread = null
+	mp = true
+	mp_match = m
+	mp_rules = PoolMPRules.clean(m.get("rules", {}))
+	mp_opp = online.opponent()
+	mp_score = [0, 0]
+	mp_seq = 0
+	mp_inbox.clear()
+	mp_settles.clear()
+	mp_fouls = [0, 0]
+	mp_over = false
+	mp_want_rematch = [false, false]
+	mp_heard_ms = Time.get_ticks_msec()
+	mp_opp_left = false
+	mp_remote = {}
+	_mp_result_sent = false
+	guides_allowed = bool(mp_rules.guides)
+	_reset_person()
+	pulling = false
+	tip_adjust = false
+	player.down = false
+	player.locked = false
+	shot_power = 0.0
+	pull_px = 0.0
+	brain.reset()
+	brain.hush()
+	menu.close()
+	hud.close_confirm()
+	hud.clear_finish()
+	hud.set_online(true)
+	hud.set_shown(true)
+	online.set_status("playing")
+	online.set_ready(false)
+	match_started = int(Time.get_unix_time_from_system())
+	cam_time = 0.0
+	_presence_t = 0.0
+	mp_breaker_me = online.is_host()
+	_mp_rack(int(m.get("seed", 1)))
+
+
+func _mp_rack(seed_value: int) -> void:
+	new_rack(seed_value)
+	mp_fouls = [0, 0]
+	your_turn = mp_breaker_me
+	hud.set_thinking(false)
+	_refresh_hud()
+	mp_clock = float(mp_rules.get("clock", 0))
+	if your_turn:
+		hud.say("Your break", "brass")
+	else:
+		hud.say("%s breaks" % _foe_name(), "brass")
+		_mp_their_turn()
+
+
+func _mp_their_turn() -> void:
+	phase = Phase.AI_THINK
+	ai_timer = 0.0
+	ai_shot = {}
+	hud.set_thinking(true)
+	if player.down:
+		_leave_stance()
+
+
+func _mp_their_turn_update(delta: float) -> void:
+	ai_timer += delta
+	cue_view.hide_stick()
+	cue_view.clear_guide()
+	# their cue ball, following their hand while they have it
+	var h: Variant = mp_remote.get("h", null)
+	if ball_in_hand and h is Array and (h as Array).size() == 2:
+		sim.place_cue(Vector2(float(h[0]), float(h[1])))
+		table.cue_lift = HOLD_LIFT
+	while not mp_inbox.is_empty() and phase == Phase.AI_THINK:
+		var m: Array = mp_inbox.pop_front()
+		_mp_apply(str(m[0]), m[1])
+
+
+func _mp_apply(event: String, p: Dictionary) -> void:
+	match event:
+		"place":
+			var at: Array = p.get("p", [0, 0])
+			sim.place_cue(Vector2(float(at[0]), float(at[1])))
+			table.cue_lift = 0.0
+			ball_in_hand = false
+			sound.play("rail", table.ball_world(sim, PoolSim.CUE), 0.12)
+		"call":
+			called_pocket = int(p.get("pocket", -1))
+			table.clear_pocket_glows()
+			if called_pocket >= 0:
+				table.set_pocket_glow(called_pocket, 2)
+				hud.say("%s calls %s" % [_foe_name(), PoolSim.POCKET_NAMES[called_pocket].trim_prefix("the ")], "call")
+		"timeout":
+			_mp_timeout(false)
+		"shot":
+			mp_seq = int(p.get("seq", mp_seq + 1))
+			var d: Array = p.get("dir", [1, 0])
+			var e: Array = p.get("english", [0, 0])
+			var at: Array = p.get("place", [])
+			if at.size() == 2:
+				sim.place_cue(Vector2(float(at[0]), float(at[1])))
+			table.cue_lift = 0.0
+			table.ball_nodes[PoolSim.CUE].visible = true
+			ball_in_hand = false
+			called_pocket = int(p.get("pocket", -1))
+			ai_shot = {
+				"dir": Vector2(float(d[0]), float(d[1])).normalized(),
+				"speed": float(p.get("speed", 1.0)),
+				"english": Vector2(float(e[0]), float(e[1])),
+				"pocket": called_pocket,
+			}
+			hud.set_thinking(false)
+			aim_dir = ai_shot.dir
+			aim_yaw = atan2(aim_dir.y, aim_dir.x)
+			var cue := sim.ball(PoolSim.CUE)
+			stroke_pull = clampf(float(p.get("pull", 0.15)), 0.02, 0.35)
+			stroke_elev = _cue_clearance(cue.pos, aim_dir, 0.006, stroke_pull, ai_shot.english)
+			cue_elev = stroke_elev
+			stroke_t = 0.0
+			phase = Phase.AI_STROKE
+
+
+# Their shot has stopped here; take their word for where it all ended up.
+func _mp_try_settle() -> void:
+	if not mp_settles.has(mp_seq):
+		return
+	var p: Dictionary = mp_settles[mp_seq]
+	mp_settles.erase(mp_seq)
+	var bs: Array = p.get("balls", [])
+	for i in mini(bs.size(), sim.balls.size()):
+		var r: Array = bs[i]
+		var b: PoolSim.Ball = sim.balls[i]
+		b.pos = Vector2(float(r[0]), float(r[1]))
+		b.on_table = int(r[2]) == 1
+		b.pocket = int(r[3])
+		b.vel = Vector2.ZERO
+		b.spin = Vector3.ZERO
+		b.resting = true
+	var evs: Array = []
+	for e in p.get("events", []):
+		var d := {"type": str(e.get("type", ""))}
+		for k in ["a", "b", "ball", "pocket"]:
+			if (e as Dictionary).has(k):
+				d[k] = int(e[k])
+		evs.append(d)
+	sim.events = evs
+	_resolve_shot()
+
+
+func _mp_send_settle() -> void:
+	var bs: Array = []
+	for b in sim.balls:
+		bs.append([b.pos.x, b.pos.y, 1 if b.on_table else 0, b.pocket])
+	var evs: Array = []
+	for ev in sim.events:
+		var e := {"type": ev.type}
+		for k in ["a", "b", "ball", "pocket"]:
+			if (ev as Dictionary).has(k):
+				e[k] = ev[k]
+		evs.append(e)
+	online.lobby_send("settle", {"seq": mp_seq, "balls": bs, "events": evs})
+
+
+func _mp_update(delta: float) -> void:
+	# where you are and what you're doing: up to five times a second while it
+	# changes, and every two seconds anyway so they know you're still there
+	var now := Time.get_ticks_msec()
+	if now - _mp_pose_ms >= 200:
+		var pose := {"p": [snappedf(player.pos.x, 0.01), snappedf(player.pos.y, 0.01)], "y": snappedf(player.yaw, 0.01),
+			"d": player.down}
+		if ball_in_hand and phase == Phase.PLACE:
+			pose["h"] = [snappedf(place_point.x, 0.005), snappedf(place_point.y, 0.005)]
+		if player.down and your_turn and (phase == Phase.AIM or phase == Phase.STROKE):
+			var pull := 0.035 + shot_power * 0.27
+			pose["a"] = [snappedf(aim_dir.x, 0.0005), snappedf(aim_dir.y, 0.0005), snappedf(pull, 0.005),
+				snappedf(cue_elev, 0.005), snappedf(english.x, 0.01), snappedf(english.y, 0.01)]
+		if pose != _mp_pose_last or now - _mp_pose_ms >= 2000:
+			_mp_pose_ms = now
+			_mp_pose_last = pose
+			online.lobby_send("pose", pose)
+	# the shot clock
+	if not mp_over and int(mp_rules.get("clock", 0)) > 0 and phase in [Phase.PLACE, Phase.AIM, Phase.AI_THINK]:
+		mp_clock = maxf(0.0, mp_clock - delta)
+		hud.set_clock(mp_clock, your_turn)
+		if your_turn and mp_clock <= 0.0 and not pulling:
+			_mp_timeout(true)
+	else:
+		hud.set_clock(-1.0, your_turn)
+	# gone quiet: twenty seconds without a word (in real time, whatever the
+	# frame rate) and they've dropped out
+	if not mp_over and Time.get_ticks_msec() - mp_heard_ms > 20000:
+		_mp_match_over(true, "%s lost connection" % _foe_name())
+
+
+# The shooter ran out of time: a foul, ball in hand to the other player.
+func _mp_timeout(mine: bool) -> void:
+	if mine:
+		online.lobby_send("timeout", {})
+	if player.down:
+		_leave_stance()
+	pulling = false
+	hud.set_power(0.0, false)
+	var side := 0 if your_turn else 1
+	mp_fouls[side] = int(mp_fouls[side]) + 1
+	if bool(mp_rules.get("three_fouls", false)) and int(mp_fouls[side]) >= 3:
+		_mp_rack_over(not your_turn, "Three fouls in a row")
+		return
+	hud.say("Shot clock: foul, ball in hand", "foul")
+	your_turn = not your_turn
+	ball_in_hand = true
+	behind_head = str(mp_rules.get("scratch", "anywhere")) == "kitchen"
+	called_pocket = -1
+	table.clear_pocket_glows()
+	_refresh_hud()
+	if your_turn:
+		table.cue_lift = HOLD_LIFT
+	_begin_turn()
+
+
+func _mp_drive_avatar(_delta: float) -> void:
+	if mp_remote.is_empty():
+		return
+	var p: Array = mp_remote.get("p", [0, 0])
+	var at := Vector2(float(p[0]), float(p[1]))
+	var yaw_p := float(mp_remote.get("y", 0.0))
+	var face := atan2(cos(yaw_p), sin(yaw_p))
+	var d := bot.pos.distance_to(at)
+	if d > 0.12:
+		bot.go([at], face, clampf(d * 2.5, 0.7, 2.2))
+	else:
+		bot.stop(face)
+	var down := bool(mp_remote.get("d", false))
+	bot.stance_on = down
+	var a: Variant = mp_remote.get("a", null)
+	if phase == Phase.AI_STROKE:
+		pass
+	elif down and a is Array and (a as Array).size() == 6 and phase == Phase.AI_THINK:
+		_bot_stick(sim.ball(PoolSim.CUE).pos, Vector2(float(a[0]), float(a[1])), float(a[2]), float(a[3]),
+			Vector2(float(a[4]), float(a[5])))
+	else:
+		bot.clear_shot()
+	bot.look_target = table.ball_world(sim, PoolSim.CUE) if down else null
+
+
+func _mp_rack_over(you_won: bool, reason: String) -> void:
+	phase = Phase.OVER
+	table.clear_pocket_glows()
+	if player.down:
+		_leave_stance()
+	mp_score[0 if you_won else 1] = int(mp_score[0 if you_won else 1]) + 1
+	_refresh_hud()
+	var race := int(mp_rules.get("race", 1))
+	if int(mp_score[0]) >= race or int(mp_score[1]) >= race:
+		_mp_match_over(you_won, reason)
+		return
+	if you_won:
+		hud.say("You take the rack, %d-%d" % [mp_score[0], mp_score[1]], "good")
+	else:
+		hud.say("%s takes the rack, %d-%d" % [_foe_name(), mp_score[0], mp_score[1]], "foul")
+	match str(mp_rules.get("break", "alternate")):
+		"winner":
+			mp_breaker_me = you_won
+		"loser":
+			mp_breaker_me = not you_won
+		_:
+			mp_breaker_me = not mp_breaker_me
+	var next := _next_seed(rack_seed)
+	await get_tree().create_timer(3.0).timeout
+	if mp and not mp_over:
+		_mp_rack(next)
+
+
+func _mp_match_over(you_won: bool, reason: String) -> void:
+	if mp_over:
+		return
+	mp_over = true
+	phase = Phase.OVER
+	hud.set_thinking(false)
+	hud.set_clock(-1.0, true)
+	if player.down:
+		_leave_stance()
+	_bank_play_time()
+	var xp := profile.record_mp_game(you_won)
+	var score := "%d-%d" % [mp_score[0], mp_score[1]]
+	last_result = ("Beat %s " if you_won else "Lost to %s ") % _foe_name() + score
+	var why := reason if reason != "" else ("The 8 went where you called it." if you_won else "The 8 went where they called it.")
+	var reward := "+1 trophy  ·  +50 coins" if you_won else "+%d XP" % xp
+	var title := "You win" if you_won else "%s wins" % _foe_name()
+	hud.finish(title, "%s  %s  ·  %s" % [why, score, reward], you_won)
+	if mp_opp_left:
+		hud.set_result_note("%s has left" % _foe_name(), false)
+	_mp_report(you_won)
+
+
+# Tell the server who won. The loser's word settles it at once; the winner's
+# needs the loser to agree, or a minute to pass if they've vanished.
+func _mp_report(you_won: bool) -> void:
+	if _mp_result_sent or mp_match.is_empty():
+		return
+	_mp_result_sent = true
+	var match_id := str(mp_match.get("id", ""))
+	var winner := online.user_id if you_won else str(mp_opp.get("id", ""))
+	var r := await online.report_result(match_id, winner)
+	if you_won and bool(r.get("waiting", false)):
+		await get_tree().create_timer(65.0).timeout
+		await online.report_result(match_id, winner)
+
+
+func _mp_rematch() -> void:
+	if not mp_over or mp_opp_left:
+		return
+	mp_want_rematch[0] = true
+	online.lobby_send("rematch", {})
+	hud.set_result_note("Waiting for %s..." % _foe_name(), true)
+	_mp_try_rematch()
+
+
+func _mp_try_rematch() -> void:
+	if not (mp_want_rematch[0] and mp_want_rematch[1]) or not online.is_host():
+		return
+	mp_want_rematch = [false, false]
+	var m := await online.start_match()
+	if m.has("error"):
+		hud.set_result_note(str(m.error), true)
+		return
+	online.lobby_send("start", {"match": m})
+	start_online(m)
+
+
+# Back to the lobby screen. Mid-match, that's handing them the game.
+func _mp_back_to_lobby() -> void:
+	if not mp_over:
+		online.lobby_send("forfeit", {})
+		mp_over = true
+		_mp_report(false)
+	else:
+		online.lobby_send("to_lobby", {})
+	mp = false
+	mp_remote = {}
+	brain.reset()
+	brain.spawn()
+	guides_allowed = bool(save_state.get("guides", true))
+	_leave_table()
+	online.set_status("lobby")
+	online.refresh_lobby()
+	menu.open("lobby" if not online.lobby.is_empty() else "mp")
+
+
+func _on_lobby_event(event: String, p: Dictionary) -> void:
+	if event != "presence":
+		mp_heard_ms = Time.get_ticks_msec()
+	match event:
+		"start":
+			if not online.is_host() and typeof(p.get("match")) == TYPE_DICTIONARY:
+				start_online(p.match)
+		"pose":
+			if mp:
+				mp_remote = p
+		"settle":
+			if mp:
+				mp_settles[int(p.get("seq", -1))] = p
+		"shot", "place", "call", "timeout":
+			if mp and not mp_over:
+				mp_inbox.append([event, p])
+		"rematch":
+			if mp and mp_over:
+				mp_want_rematch[1] = true
+				if not mp_want_rematch[0]:
+					hud.set_result_note("%s wants a rematch" % _foe_name(), true)
+				_mp_try_rematch()
+		"to_lobby":
+			if mp and mp_over:
+				mp_opp_left = true
+				hud.set_result_note("%s went back to the lobby" % _foe_name(), false)
+		"forfeit":
+			if mp and not mp_over:
+				_mp_match_over(true, "%s left the match." % _foe_name())
+		"left", "closed":
+			if mp:
+				mp_opp_left = true
+				if not mp_over:
+					_mp_match_over(true, "%s left the match." % _foe_name())
+				else:
+					hud.set_result_note("%s has left" % _foe_name(), false)
+
 
 
 # Back on your feet with nothing in your hands, for a fresh game.

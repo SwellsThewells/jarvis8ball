@@ -30,8 +30,8 @@ in the top right corner.
 
 ## Shop and saving
 
-Owned cues, the one in your hand, and your chosen difficulty live in
-`user://jarvis8pool.cfg`. Adding a cue is one entry in `CUES` in
+Owned cues, the one in your hand, your coins and your chosen difficulty live in
+`user://jarvis8pool.cfg` (online, your coins and cues are your account's). Adding a cue is one entry in `CUES` in
 `scripts/pool_cues.gd` and it appears in the shop on its own. Every section of
 the cue takes an art pattern (wood, marble, flames, circuit board, holographic
 foil, runes and so on), can be carved with flutes or a spiral, or cut into
@@ -56,40 +56,27 @@ fullscreen, VSync, a frame rate cap, and the film grain and vignette. They
 save in the `[settings]` section of the same save file. It's all in
 `scripts/pool_settings.gd`.
 
-## Profile and Steam
+## Profile, friends and online play
 
 The top right corner of the title screen is your profile. Signed out, it
-offers to sign in through Steam; signed in, it shows your Steam avatar, name,
-level with XP bar, and trophies. Click it for the full profile: level,
-trophies, and stats (games, wins and losses vs the house player, win rate,
-streaks, toughest level beaten, shots, balls hit, balls potted, fouls, time
-played, drinks, punches landed, times decked). It's in `scripts/pool_profile.gd`.
+offers **Sign in with Discord**; signed in, it shows your Discord name and
+picture, level with XP bar and trophies, with your coins and a **Friends**
+button beside it. Click it for the full profile and stats
+(`scripts/pool_profile.gd`).
 
-- **XP and levels:** a win against the house player is 60 XP plus 12 per level
-  he's set to; a loss is 15 plus 3 per level; every ball you pot is 3. Each
-  level takes 40 XP more than the last, starting at 100.
-- **Trophies** are online wins. `record_mp_game(won)` is there ready for
-  multiplayer and pays 200 XP for a win, 50 for a loss.
-- **Where stats live:** as Steam stats on your account, and in the local save
-  per Steam account (`[stats_<steamid>]`), merged by taking the larger of each.
-  Anything you did before ever signing in carries over to the first account
-  that signs in.
+**Play > Multiplayer** lets you create a lobby (public or private, with house
+rules: race to 1-5 racks, shot clock, where the cue ball goes after a foul,
+calling every shot, who breaks next, three fouls, aim guide) or browse public
+ones, or join by code. **Friends** lets you add people by their Discord name,
+chat, and invite them to your lobby. Winning an online match is a trophy and
+50 coins; at the end you can rematch or go back to the lobby.
 
-[GodotSteam](https://godotsteam.com) (the GDExtension) is already in
-`addons/godotsteam`, and the game still runs fine if Steam isn't open. To
-finish setting it up:
-
-1. Open the project in the editor once so Godot picks up the extension.
-2. Put your app ID in `APP_ID` in `scripts/pool_profile.gd`, or in
-   `steam_appid.txt` next to the exe. Until then it's 480, Valve's Spacewar
-   test app, so sign-in can be tried now; stats won't stick on Spacewar.
-3. In Steamworks, under Stats & Achievements, add one INT stat per name in
-   `PoolProfile.STATS` (`xp`, `trophies`, `mp_losses`, `bot_wins`, …), set to
-   be written by the client.
-
-In an editor build without Steam, "Sign in through Steam" gives you a local
-test profile instead, so the profile screens can be worked on; exported
-builds just say Steam sign-in isn't available yet.
+Coins are the one currency: drinks at the bar and cues in the shop (each cue
+has its own price). It all runs on a free Supabase project: see
+**ONLINE_SETUP.md** to set it up. The code is `scripts/pool_online.gd` (sign-in
+and requests), `scripts/pool_realtime.gd` (the live connection),
+`scripts/pool_mp_rules.gd` (the house rules) and the online section of
+`scripts/game.gd`; the database is `supabase/schema.sql`.
 
 ## Controls
 

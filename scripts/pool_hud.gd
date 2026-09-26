@@ -55,6 +55,8 @@ class ScoreBar extends Control:
 	var ids: Array = [[], []]
 	var active := 0
 	var thinking := false
+	var clock := -1.0             # shot clock, seconds left; -1 when there isn't one
+	var clock_side := 0
 	var _slide := 0.0
 	var _t := 0.0
 	var logo: Texture2D
@@ -99,6 +101,17 @@ class ScoreBar extends Control:
 				draw_string(sf, Vector2(w - 18 - tw, 41), note.to_upper(), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, tcol)
 				for i in balls.size():
 					_ball(Vector2(half + 40.0 + float(i) * step, h * 0.5 - 1.0), balls[i], on)
+		# the shot clock, under whoever's shot it is
+		if clock >= 0.0:
+			var secs := int(ceil(clock))
+			var ccol := PoolTheme.DANGER if clock < 5.5 else PoolTheme.WHITE
+			var ctext := "%d" % secs
+			var cf := PoolHud._f(800, true)
+			var cw := cf.get_string_size(ctext, HORIZONTAL_ALIGNMENT_LEFT, -1, 22).x + 24.0
+			var cx := half - 60.0 - cw if clock_side == 0 else half + 60.0
+			var cr := Rect2(Vector2(cx, h + 8.0), Vector2(cw, 30))
+			draw_style_box(PoolTheme.box(Color(PoolTheme.PANEL, 0.9), 15, Color(ccol, 0.5), 1), cr)
+			draw_string(cf, Vector2(cr.position.x, cr.position.y + 23), ctext, HORIZONTAL_ALIGNMENT_CENTER, cw, 22, ccol)
 		# the J in the middle
 		var c := Vector2(half, h * 0.5 - 1.0)
 		draw_circle(c, 17.0, Color(0.03, 0.033, 0.036), true, -1.0, true)
@@ -425,7 +438,7 @@ class HintBar extends Control:
 
 class CardButtons extends Control:
 	signal chosen(id: String)
-	var buttons: Array = []       # [id, label, primary]
+	var buttons: Array = []       # [id, label, primary, enabled]
 	var rects: Array = []
 	var hover := Vector2(-100, -100)
 
@@ -440,7 +453,8 @@ class CardButtons extends Control:
 		elif ev is InputEventMouseButton and ev.button_index == MOUSE_BUTTON_LEFT and ev.pressed:
 			for i in rects.size():
 				if (rects[i] as Rect2).has_point(ev.position):
-					chosen.emit(str(buttons[i][0]))
+					if (buttons[i] as Array).size() < 4 or bool(buttons[i][3]):
+						chosen.emit(str(buttons[i][0]))
 					return
 			_clicked_away()
 
@@ -456,8 +470,9 @@ class CardButtons extends Control:
 			var r := Rect2(Vector2((size.x - bw) * 0.5, y + float(i) * (bh + 10.0)), Vector2(bw, bh))
 			rects.append(r)
 			var primary: bool = buttons[i][2]
+			var enabled: bool = (buttons[i] as Array).size() < 4 or bool(buttons[i][3])
 			PoolTheme.button(self, r, str(buttons[i][1]), "primary" if primary else "secondary",
-				1.0 if r.has_point(hover) else 0.0, true, 18)
+				1.0 if r.has_point(hover) and enabled else 0.0, enabled, 18)
 
 
 class PauseCard extends CardButtons:
@@ -485,6 +500,7 @@ class ResultCard extends CardButtons:
 	var title := ""
 	var sub := ""
 	var won := false
+	var note := ""
 
 	func _ready() -> void:
 		super._ready()
@@ -505,6 +521,9 @@ class ResultCard extends CardButtons:
 			HORIZONTAL_ALIGNMENT_CENTER, card.size.x, 48, PoolTheme.WHITE)
 		draw_string(PoolHud._f(500), Vector2(card.position.x + 32, card.position.y + 132), sub,
 			HORIZONTAL_ALIGNMENT_CENTER, card.size.x - 64, 16, Color(1, 1, 1, 0.7))
+		if note != "":
+			PoolTheme.caps(self, Vector2(card.position.x, card.position.y + 162), note.to_upper(), PoolTheme.GOLD, 11,
+				card.size.x, HORIZONTAL_ALIGNMENT_CENTER)
 		_draw_buttons(card.position.y + 184.0, cw - 64.0)
 
 
@@ -767,7 +786,39 @@ func finish(title: String, sub: String, won: bool) -> void:
 	result.queue_redraw()
 
 
+# Online or not: the pause card offers leaving instead of a restart, and the
+# result card a rematch or the lobby.
+func set_online(on: bool) -> void:
+	if on:
+		pause.buttons = [["resume", "RESUME", true], ["menu", "LEAVE MATCH", false]]
+		result.buttons = [["again", "REMATCH", true], ["leave", "BACK TO LOBBY", false]]
+	else:
+		pause.buttons = [["resume", "RESUME", true], ["restart", "RESTART RACK", false], ["menu", "MAIN MENU", false]]
+		result.buttons = [["again", "PLAY AGAIN", true], ["leave", "MAIN MENU", false]]
+	result.note = ""
+	score.clock = -1.0
+
+
+func set_clock(secs: float, yours: bool) -> void:
+	score.clock = secs
+	score.clock_side = 0 if yours else 1
+
+
+# A line on the result card ("waiting for them..."), and whether a rematch
+# can still be asked for.
+func set_result_note(text: String, rematch_ok: bool) -> void:
+	result.note = text
+	if not result.buttons.is_empty():
+		var b: Array = result.buttons[0]
+		result.buttons[0] = [b[0], b[1], b[2], rematch_ok]
+	result.queue_redraw()
+
+
 func clear_finish() -> void:
+	result.note = ""
+	if not result.buttons.is_empty():
+		var b: Array = result.buttons[0]
+		result.buttons[0] = [b[0], b[1], b[2], true]
 	result.title = ""
 	result.sub = ""
 	result.visible = false
